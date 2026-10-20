@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AirBrowse — Developer Testing Portal &amp; Hub</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300f0ff' stroke-width='2'><path d='M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11'/></svg>" />
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen flex flex-col items-center justify-start p-6">
+
+  <!-- Header -->
+  <header class="w-full max-w-5xl flex items-center justify-between pb-6 border-b border-slate-800">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
+        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11" />
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-xl font-extrabold text-white">AirBrowse — Portail de Test &amp; Débogage</h1>
+        <p class="text-xs text-cyan-400 font-mono">Chrome Manifest V3 • Environnement Local</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <a href="/docs/index.html" class="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-semibold text-slate-300 transition-colors">
+        Voir le Site Vitrine (Docs) →
+      </a>
+      <a href="/src/popup/index.html" class="px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 rounded-xl text-xs font-semibold transition-colors">
+        Plein Écran Popup →
+      </a>
+    </div>
+  </header>
+
+  <!-- Explanation Banner -->
+  <div class="w-full max-w-5xl my-6 p-4 rounded-2xl bg-cyan-950/40 border border-cyan-500/30 text-xs text-cyan-200 flex items-start gap-3">
+    <span class="text-lg">💡</span>
+    <div>
+      <strong class="font-bold text-white text-sm">Pourquoi cette page s'affiche ?</strong>
+      <p class="mt-1 leading-relaxed text-slate-300">
+        <strong>AirBrowse est une extension Chrome</strong> et non un simple site web. 
+        Pour l'utiliser en conditions réelles avec le suivi caméra sur n'importe quel site (ex: Wikipedia, Google), chargez le dossier 
+        <code class="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-cyan-300 font-mono">dist/</code> 
+        dans <code class="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-cyan-300 font-mono">chrome://extensions</code>.
+      </p>
+    </div>
+  </div>
+
+  <!-- Main Grid: Live Popup Preview + Interactive Playground -->
+  <main class="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
+    
+    <!-- Left Column: Embedded Live Popup Preview -->
+    <div class="lg:col-span-5 flex flex-col items-center">
+      <div class="w-full p-4 rounded-2xl bg-slate-900/60 border border-slate-800 flex flex-col items-center">
+        <div class="w-full flex items-center justify-between pb-3 mb-3 border-b border-slate-800 text-xs font-mono text-slate-400">
+          <span>Aperçu Popup Extension</span>
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        </div>
+        
+        <!-- Mock Browser Extension Frame -->
+        <div class="rounded-2xl border border-slate-700/80 shadow-2xl overflow-hidden bg-slate-950">
+          <iframe src="/src/popup/index.html" class="w-[352px] h-[580px] border-none"></iframe>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Interactive Playground to Test Gestures -->
+    <div class="lg:col-span-7 flex flex-col gap-5">
+      
+      <!-- Card 1: 3-Step Setup Guide -->
+      <div class="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-cyan-400 font-mono">
+          🚀 Comment installer l'extension dans Chrome (30 sec)
+        </h2>
+        <ol class="space-y-3 text-xs text-slate-300 leading-relaxed list-decimal list-inside font-sans">
+          <li class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800">
+            Dans Chrome, ouvrez un nouvel onglet et collez : <br />
+            <code class="text-cyan-300 font-mono text-[11px] select-all font-bold">chrome://extensions/</code>
+          </li>
+          <li class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800">
+            Activez le bouton <strong>« Mode développeur »</strong> en haut à droite.
+          </li>
+          <li class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800">
+            Cliquez sur <strong>« Charger l'extension non empaquetée »</strong> et sélectionnez le dossier compilé :<br />
+            <code class="text-cyan-300 font-mono text-[11px] select-all font-bold">/Users/macbookair/Documents/Mirage/dist</code>
+          </li>
+        </ol>
+      </div>
+
+      <!-- Card 2: Interactive Testing Sandbox (Buttons & Inputs) -->
+      <div class="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4 flex-1">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-purple-400 font-mono">
+          🧪 Bac à Sable (Test des Clics Magnétiques &amp; Saisie)
+        </h2>
+        <p class="text-xs text-slate-400">
+          Une fois l'extension activée dans Chrome, utilisez ces éléments pour tester le pincement (Click Pinch) et l'écriture dans l'air (Air Writing) :
+        </p>
+
+        <div class="space-y-3 pt-2">
+          <!-- Text Input for Air Writing -->
+          <div>
+            <label class="block text-[11px] text-slate-400 font-mono mb-1">Champ de Saisie pour l'Air Writing :</label>
+            <input 
+              type="text" 
+              placeholder="Cliquez ici avec la main, puis écrivez dans l'air..." 
+              class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-400 font-mono"
+            />
+          </div>
+
+          <!-- Clickable Buttons for Magnetic Click -->
+          <div class="flex flex-wrap gap-2.5 pt-1">
+            <button onclick="alert('🎉 Clic réussi via AirBrowse !')" class="px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white rounded-xl text-xs font-bold shadow-md cursor-pointer transition-transform">
+              Bouton A (Tester Clic)
+            </button>
+            <button onclick="alert('⚡ Second bouton cliqué !')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold cursor-pointer transition-transform">
+              Bouton B (Second Test)
+            </button>
+            <button onclick="this.classList.toggle('bg-emerald-600');" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-xs font-semibold cursor-pointer transition-transform">
+              Bouton Toggle État
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+</body>
+</html>
