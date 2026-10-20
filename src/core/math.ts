@@ -81,9 +81,9 @@ export const GESTURE_CONFIG_DEFAULTS = {
   scrollStableFrames: 3,        // 3 stable frames to enter SCROLLING
   scrollDeadZone: 0.04,         // normalized Y joystick dead zone
   scrollExponent: 1.5,          // non-linear velocity curve
-  scrollMaxSpeedPxPerFrame: 25, // max scroll speed in pixels per frame
-  scrollMaxSpeedPxPerSec: 1500, // max scroll speed in pixels per second (frame-rate independent)
-  scrollGain: 2800,             // velocity gain multiplier
+  scrollMaxSpeedPxPerFrame: 90, // max scroll speed in pixels per frame
+  scrollMaxSpeedPxPerSec: 5400, // max scroll speed in pixels per second (frame-rate independent)
+  scrollGain: 9000,             // velocity gain multiplier
   nominalFrameMs: 1000 / 60,
 
   // On-Screen Toolbar & Dwell

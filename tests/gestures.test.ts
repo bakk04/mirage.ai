@@ -168,6 +168,18 @@ describe('3-Gesture System Suite', () => {
     ]);
   });
 
+  it('two-finger peace sign never refreshes', () => {
+    const peaceHand = createPeaceSignHand();
+    const events = [
+      ...recognizer.update(peaceHand, 0),
+      ...recognizer.update(peaceHand, 30),
+      ...recognizer.update(peaceHand, 60),
+    ];
+
+    expect(events.filter((event) => event.type === 'COMMAND')).toHaveLength(0);
+    expect(recognizer.getCurrentState()).toBe(RecognizerState.SCROLLING);
+  });
+
   it('cooldown prevents a second rapid pinch click', () => {
     const pinchedHand = createSyntheticHand({
       [LANDMARK_INDEX.THUMB_TIP]: { x: 0.42, y: 0.31 },
@@ -189,6 +201,120 @@ describe('3-Gesture System Suite', () => {
     pinch(0);
     pinch(200);
     expect(events.filter((event) => event.type === 'CLICK')).toHaveLength(1);
+  });
+
+  it('reports why a low-confidence frame was ignored', () => {
+    recognizer.update(createSyntheticHand(), 0, 0.4);
+
+    expect(recognizer.getDiagnostics()).toMatchObject({
+      confidence: 0.4,
+      reason: 'Ignored: confidence 0.40 below 0.60',
+    });
+  });
+
+  it('reports stable-frame progress while arming a peace-sign scroll', () => {
+    const peaceHand = createPeaceSignHand();
+
+    recognizer.update(peaceHand, 0);
+
+    expect(recognizer.getDiagnostics()).toMatchObject({
+      stabilityFrames: 1,
+      reason: 'Scroll pending: 1/3 stable frames',
+    });
+  });
+
+  it('four extended fingers with vertical motion produce one bounded zoom command', () => {
+    const fourFingerHand = (palmY: number): Point3D[] => createSyntheticHand({
+      [LANDMARK_INDEX.MIDDLE_MCP]: { x: 0.50, y: palmY },
+      [LANDMARK_INDEX.WRIST]: { x: 0.50, y: palmY + 0.30 },
+      [LANDMARK_INDEX.THUMB_TIP]: { x: 0.50, y: palmY + 0.18 },
+      [LANDMARK_INDEX.INDEX_TIP]: { x: 0.42, y: palmY - 0.20 },
+      [LANDMARK_INDEX.MIDDLE_TIP]: { x: 0.50, y: palmY - 0.22 },
+      [LANDMARK_INDEX.RING_TIP]: { x: 0.58, y: palmY - 0.20 },
+      [LANDMARK_INDEX.PINKY_TIP]: { x: 0.66, y: palmY - 0.16 },
+    });
+
+    const events: GestureEvent[] = [];
+    events.push(...recognizer.update(fourFingerHand(0.50), 0));
+    events.push(...recognizer.update(fourFingerHand(0.50), 30));
+    events.push(...recognizer.update(fourFingerHand(0.36), 90));
+    events.push(...recognizer.update(fourFingerHand(0.30), 120));
+
+    expect(events.filter((event) => event.type === 'COMMAND')).toEqual([
+      { type: 'COMMAND', command: 'ZOOM_IN' },
+    ]);
+    events.push(...recognizer.update(fourFingerHand(0.24), 150));
+    expect(events.filter((event) => event.type === 'COMMAND')).toHaveLength(1);
+  });
+
+  it('five-finger close requires explicit enablement and stable release', () => {
+    recognizer.setInteractionSettings('med', false, true, true);
+    const openHand = createSyntheticHand({
+      [LANDMARK_INDEX.THUMB_TIP]: { x: 0.18, y: 0.55 },
+    });
+    const events: GestureEvent[] = [];
+    events.push(...recognizer.update(openHand, 0));
+    events.push(...recognizer.update(openHand, 30));
+    events.push(...recognizer.update(openHand, 60));
+
+    expect(events.filter((event) => event.type === 'COMMAND')).toEqual([
+      { type: 'COMMAND', command: 'CLOSE_WINDOW' },
+    ]);
+
+    events.push(...recognizer.update(openHand, 90));
+    expect(events.filter((event) => event.type === 'COMMAND')).toHaveLength(1);
+  });
+
+  it('five-finger close is not blocked by small vertical hand drift', () => {
+    recognizer.setInteractionSettings('med', false, true, true);
+    const openHand = (palmY: number): Point3D[] => createSyntheticHand({
+      [LANDMARK_INDEX.MIDDLE_MCP]: { x: 0.50, y: palmY },
+      [LANDMARK_INDEX.WRIST]: { x: 0.50, y: palmY + 0.30 },
+      [LANDMARK_INDEX.THUMB_TIP]: { x: 0.18, y: palmY + 0.05 },
+    });
+    const events = [
+      ...recognizer.update(openHand(0.50), 0),
+      ...recognizer.update(openHand(0.54), 30),
+      ...recognizer.update(openHand(0.57), 60),
+    ];
+
+    expect(events.filter((event) => event.type === 'COMMAND')).toEqual([
+      { type: 'COMMAND', command: 'CLOSE_WINDOW' },
+    ]);
+  });
+
+  it('open five-finger horizontal movement toggles keyboard without window permission', () => {
+    const openHand = (palmX: number): Point3D[] => createSyntheticHand({
+      [LANDMARK_INDEX.MIDDLE_MCP]: { x: palmX, y: 0.50 },
+      [LANDMARK_INDEX.WRIST]: { x: palmX, y: 0.80 },
+    });
+    const events: GestureEvent[] = [];
+    events.push(...recognizer.update(openHand(0.40), 0));
+    events.push(...recognizer.update(openHand(0.50), 30));
+    events.push(...recognizer.update(openHand(0.62), 90));
+
+    expect(events.filter((event) => event.type === 'COMMAND')).toEqual([
+      { type: 'COMMAND', command: 'TOGGLE_KEYBOARD' },
+    ]);
+  });
+
+  it('reserves four-finger pose so it cannot also click or scroll', () => {
+    const fourFingerHand = createSyntheticHand({
+      [LANDMARK_INDEX.THUMB_TIP]: { x: 0.50, y: 0.62 },
+      [LANDMARK_INDEX.INDEX_TIP]: { x: 0.42, y: 0.20 },
+      [LANDMARK_INDEX.MIDDLE_TIP]: { x: 0.50, y: 0.18 },
+      [LANDMARK_INDEX.RING_TIP]: { x: 0.58, y: 0.20 },
+      [LANDMARK_INDEX.PINKY_TIP]: { x: 0.66, y: 0.24 },
+    });
+
+    const events = [
+      ...recognizer.update(fourFingerHand, 0),
+      ...recognizer.update(fourFingerHand, 30),
+      ...recognizer.update(fourFingerHand, 60),
+    ];
+
+    expect(events.filter((event) => event.type === 'CLICK')).toHaveLength(0);
+    expect(events.filter((event) => event.type === 'SCROLL_DELTA')).toHaveLength(0);
   });
 
   it('peace sign + hand up = scroll up, 0 clicks', () => {
@@ -222,6 +348,37 @@ describe('3-Gesture System Suite', () => {
     if (activeScroll && activeScroll.type === 'SCROLL_DELTA') {
       expect(activeScroll.direction).toBe('UP');
       expect(activeScroll.speed).toBeLessThan(0);
+    }
+  });
+
+  it('peace sign + hand down = scroll down', () => {
+    const peaceNeutral = createPeaceSignHand(0.50);
+    recognizer.update(peaceNeutral, 0);
+    recognizer.update(peaceNeutral, 30);
+    recognizer.update(peaceNeutral, 60);
+
+    const events = recognizer.update(createPeaceSignHand(0.62), 90);
+    const scroll = events.find((event) => event.type === 'SCROLL_DELTA' && event.speed !== 0);
+
+    expect(scroll).toMatchObject({ direction: 'DOWN' });
+    if (scroll?.type === 'SCROLL_DELTA') {
+      expect(scroll.speed).toBeGreaterThan(0);
+    }
+  });
+
+  it('produces a high-rate scroll delta for a decisive movement', () => {
+    const peaceNeutral = createPeaceSignHand(0.50);
+    recognizer.update(peaceNeutral, 0);
+    recognizer.update(peaceNeutral, 30);
+    recognizer.update(peaceNeutral, 60);
+
+    const events = recognizer.update(createPeaceSignHand(0.70), 90);
+    const scroll = events.find((event) => event.type === 'SCROLL_DELTA' && event.speed !== 0);
+
+    expect(scroll).toBeDefined();
+    if (scroll?.type === 'SCROLL_DELTA') {
+      expect(Math.abs(scroll.speed)).toBeGreaterThan(40);
+      expect(Math.abs(scroll.speed)).toBeLessThanOrEqual(90);
     }
   });
 

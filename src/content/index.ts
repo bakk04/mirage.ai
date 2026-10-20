@@ -22,11 +22,15 @@ import { KeyboardUI } from '../ui/Keyboard';
 import { extractMainText } from './extractor';
 import type { HandLandmarker, NormalizedLandmark } from '@mediapipe/tasks-vision';
 
+const AIRBROWSE_BUILD_ID = 'gesture-controls-2026-10-20';
+
 class AirBrowseContentPipeline {
   private video: HTMLVideoElement | null = null;
   private landmarker: HandLandmarker | null = null;
   private animationFrameId: number | null = null;
   private lastVideoTime = -1;
+  private lastInferenceTimestamp = -Infinity;
+  private consecutiveInferenceErrors = 0;
   private isRunning = false;
 
   // Configuration
@@ -51,9 +55,16 @@ class AirBrowseContentPipeline {
     lastCommand: 'none',
     commandResult: 'none',
     error: '',
+    confidence: 0,
+    stabilityFrames: 0,
+    reason: 'Waiting for a valid hand',
   };
+  private loggedVideoDimensions = false;
 
   constructor() {
+    if (typeof document !== 'undefined') {
+      document.documentElement.dataset.airbrowseBuild = AIRBROWSE_BUILD_ID;
+    }
     this.gestureRecognizer = new GestureRecognizer();
     this.interactionEngine = new InteractionEngine();
     this.overlay = new SpatialOverlay();
@@ -143,6 +154,12 @@ class AirBrowseContentPipeline {
     this.diagnostic.camera = 'OFF';
     this.diagnostic.hands = 0;
     this.diagnostic.landmarks = 'INVALID';
+    this.diagnostic.confidence = 0;
+    this.diagnostic.stabilityFrames = 0;
+    this.diagnostic.reason = 'Camera stopped';
+    this.lastVideoTime = -1;
+    this.lastInferenceTimestamp = -Infinity;
+    this.consecutiveInferenceErrors = 0;
 
     this.gestureRecognizer.reset();
     this.interactionEngine.stopScrolling();
@@ -304,9 +321,22 @@ class AirBrowseContentPipeline {
 
     if (
       this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      this.video.videoWidth > 0 &&
+      this.video.videoHeight > 0 &&
+      timestamp - this.lastInferenceTimestamp >= 33 &&
       this.video.currentTime !== this.lastVideoTime
     ) {
+      this.lastVideoTime = this.video.currentTime;
+      this.lastInferenceTimestamp = timestamp;
       try {
+        if (!this.loggedVideoDimensions) {
+          console.info('[AirBrowse] Sending non-square webcam frames to MediaPipe:', {
+            width: this.video.videoWidth,
+            height: this.video.videoHeight,
+            aspectRatio: this.video.videoWidth / this.video.videoHeight,
+          });
+          this.loggedVideoDimensions = true;
+        }
         const tStart = performance.now();
         const results = this.landmarker.detectForVideo(this.video, timestamp);
         const latencyMs = performance.now() - tStart;
@@ -369,6 +399,12 @@ class AirBrowseContentPipeline {
           timestamp,
           confidence
         );
+        const gestureDiagnostics = this.gestureRecognizer.getDiagnostics();
+        this.diagnostic.confidence = gestureDiagnostics.confidence;
+        this.diagnostic.stabilityFrames = gestureDiagnostics.stabilityFrames;
+        this.diagnostic.reason = gestureDiagnostics.reason;
+        this.diagnostic.error = '';
+        this.consecutiveInferenceErrors = 0;
 
         const currentState = this.gestureRecognizer.getCurrentState();
         this.diagnostic.gesture = currentState;
@@ -457,6 +493,13 @@ class AirBrowseContentPipeline {
                   this.dispatchCommand('REFRESH', 'Refresh');
                 } else if (ev.command === 'CLOSE_WINDOW') {
                   this.dispatchCommand('CLOSE_WINDOW', 'Close window');
+                } else if (ev.command === 'TOGGLE_KEYBOARD') {
+                  this.keyboard.toggle();
+                  this.diagnostic.lastCommand = 'TOGGLE_KEYBOARD';
+                  this.diagnostic.commandResult = 'SUCCESS';
+                  this.overlay.showToast(this.keyboard.isOpen ? 'Keyboard opened' : 'Keyboard closed');
+                } else if (ev.command === 'ZOOM_IN' || ev.command === 'ZOOM_OUT') {
+                  this.dispatchZoom(ev.command === 'ZOOM_IN' ? 0.1 : -0.1);
                 }
                 break;
 
@@ -468,12 +511,16 @@ class AirBrowseContentPipeline {
           }
         }
 
-        this.lastVideoTime = this.video.currentTime;
       } catch (inferenceError) {
+        this.consecutiveInferenceErrors++;
         this.diagnostic.error = inferenceError instanceof Error
           ? inferenceError.message
           : String(inferenceError);
-        console.warn('[AirBrowse] Vision inference error:', inferenceError);
+        console.error('[AirBrowse] Vision inference error:', {
+          error: inferenceError,
+          consecutiveErrors: this.consecutiveInferenceErrors,
+          videoTime: this.video.currentTime,
+        });
       }
     }
 
@@ -511,9 +558,10 @@ class AirBrowseContentPipeline {
     }
     const fps = Math.round(1000 / Math.max(1, latencyMs));
     hud.textContent = [
-      `AirBrowse | Camera: ${this.diagnostic.camera} | MediaPipe: ${this.diagnostic.mediapipe}`,
-      `Hands: ${this.diagnostic.hands} | Landmarks: ${this.diagnostic.landmarks}`,
-      `Gesture: ${state} | Last: ${this.diagnostic.lastCommand} (${this.diagnostic.commandResult})`,
+      `AirBrowse ${AIRBROWSE_BUILD_ID} | Camera: ${this.diagnostic.camera} | MediaPipe: ${this.diagnostic.mediapipe}`,
+      `Hands: ${this.diagnostic.hands} | Landmarks: ${this.diagnostic.landmarks} | Confidence: ${this.diagnostic.confidence.toFixed(2)}`,
+      `Gesture: ${state} | Stable: ${this.diagnostic.stabilityFrames} | ${this.diagnostic.reason}`,
+      `Last: ${this.diagnostic.lastCommand} (${this.diagnostic.commandResult})`,
       `Inference: ${latencyMs.toFixed(1)}ms (${fps}fps)${this.diagnostic.error ? ` | Error: ${this.diagnostic.error}` : ''}`,
     ].join('\n');
   }
@@ -528,12 +576,34 @@ class AirBrowseContentPipeline {
         this.diagnostic.error = message;
         return;
       }
+
       if (response?.success) {
         this.diagnostic.commandResult = 'SUCCESS';
         this.overlay.showToast(label);
       } else {
         this.diagnostic.commandResult = `FAILED: ${response?.error ?? 'No acknowledgement'}`;
         this.diagnostic.error = response?.error ?? 'No acknowledgement';
+      }
+    });
+  }
+
+  private dispatchZoom(delta: number): void {
+    this.diagnostic.lastCommand = delta > 0 ? 'ZOOM_IN' : 'ZOOM_OUT';
+    this.diagnostic.commandResult = 'PENDING';
+    chrome.runtime.sendMessage({ type: 'ZOOM', delta }, (response?: { success?: boolean; zoom?: number; error?: string }) => {
+      if (chrome.runtime.lastError) {
+        const message = chrome.runtime.lastError.message ?? 'Zoom message failed';
+        this.diagnostic.commandResult = `FAILED: ${message}`;
+        this.diagnostic.error = message;
+        return;
+      }
+      if (response?.success) {
+        this.diagnostic.commandResult = 'SUCCESS';
+        this.overlay.showToast(`Zoom ${Math.round((response.zoom ?? 1) * 100)}%`);
+      } else {
+        const message = response?.error ?? 'Zoom was not acknowledged';
+        this.diagnostic.commandResult = `FAILED: ${message}`;
+        this.diagnostic.error = message;
       }
     });
   }

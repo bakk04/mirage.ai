@@ -30,6 +30,7 @@ type ModuleFactoryFn = (moduleArg?: unknown) => Promise<unknown>;
 async function loadIsolatedModuleFactory(
   wasmBasePath: string
 ): Promise<ModuleFactoryFn | null> {
+  const wasmAssetPath = `${wasmBasePath.replace(/\/+$/, '')}/`;
   const globalObj = (typeof globalThis !== 'undefined' ? globalThis : self) as Record<string, unknown>;
 
   if (typeof globalObj.ModuleFactory === 'function') {
@@ -38,7 +39,7 @@ async function loadIsolatedModuleFactory(
 
   // 1. Dynamic ES module import from extension package
   try {
-    const moduleUrl = `${wasmBasePath}vision_wasm_module_internal.js`;
+    const moduleUrl = `${wasmAssetPath}vision_wasm_module_internal.js`;
     console.info('[AirBrowse] Pre-loading Wasm ModuleFactory via dynamic import:', moduleUrl);
     const mod = await import(/* @vite-ignore */ moduleUrl);
     const factory =
@@ -58,7 +59,7 @@ async function loadIsolatedModuleFactory(
 
   // 2. Blob fallback if direct URL import is restricted by page CSP
   try {
-    const moduleUrl = `${wasmBasePath}vision_wasm_module_internal.js`;
+    const moduleUrl = `${wasmAssetPath}vision_wasm_module_internal.js`;
     const response = await fetch(moduleUrl);
     const code = await response.text();
     const blob = new Blob([code], { type: 'application/javascript' });
@@ -93,14 +94,29 @@ async function loadIsolatedModuleFactory(
 export async function initializeHandLandmarker(
   config: HandLandmarkerConfig = {}
 ): Promise<HandLandmarker> {
-  const wasmPath = chrome.runtime.getURL('models/wasm/');
+  // FilesetResolver appends the WASM filenames itself. Supplying a path
+  // without a trailing slash avoids generating URLs such as `wasm//file.wasm`.
+  const wasmPath = chrome.runtime.getURL('models/wasm').replace(/\/+$/, '');
   console.info('[AirBrowse] Resolving Vision Tasks WASM bundle from:', wasmPath);
 
   // Pre-load ModuleFactory into Content Script isolated realm
   const factory = await loadIsolatedModuleFactory(wasmPath);
 
   // Use module fileset (maps to vision_wasm_module_internal.wasm)
-  const vision = await FilesetResolver.forVisionTasks(wasmPath, true);
+  let vision;
+  try {
+    vision = await FilesetResolver.forVisionTasks(wasmPath, true);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[AirBrowse] Failed to load MediaPipe Vision WASM fileset:', {
+      wasmPath,
+      detail,
+      error,
+    });
+    throw new Error(
+      `MediaPipe WASM fileset could not be loaded from ${wasmPath}: ${detail}`
+    );
+  }
 
   // If ModuleFactory is bound in isolated realm, clear wasmLoaderPath.
   // This prevents MediaPipe from appending a redundant/failing <script> tag into host document.body.
@@ -109,7 +125,13 @@ export async function initializeHandLandmarker(
   }
 
   const modelAssetPath = chrome.runtime.getURL('models/hand_landmarker.task');
-  console.info('[AirBrowse] Resolving HandLandmarker task model from:', modelAssetPath);
+  console.info('[AirBrowse] MediaPipe assets:', {
+    package: '@mediapipe/tasks-vision',
+    version: '1.1.1',
+    wasmPath,
+    modelAssetPath,
+    delegateCandidates: ['GPU', 'CPU'],
+  });
 
   const options = {
     runningMode: 'VIDEO' as const,
@@ -143,20 +165,35 @@ export async function initializeHandLandmarker(
     console.info('[AirBrowse] HandLandmarker initialized successfully with GPU delegate.');
     return landmarker;
   } catch (gpuError) {
+    const gpuDetail = gpuError instanceof Error ? gpuError.message : String(gpuError);
     console.warn(
       '[AirBrowse] GPU delegate initialization failed, falling back to CPU runtime:',
-      gpuError
+      { wasmPath, modelAssetPath, detail: gpuDetail, error: gpuError }
     );
 
-    rebindFactory();
-    const landmarker = await HandLandmarker.createFromOptions(vision, {
-      ...options,
-      baseOptions: {
+    try {
+      rebindFactory();
+      const landmarker = await HandLandmarker.createFromOptions(vision, {
+        ...options,
+        baseOptions: {
+          modelAssetPath,
+          delegate: 'CPU',
+        },
+      });
+      console.info('[AirBrowse] HandLandmarker initialized successfully with CPU delegate.');
+      return landmarker;
+    } catch (cpuError) {
+      const cpuDetail = cpuError instanceof Error ? cpuError.message : String(cpuError);
+      console.error('[AirBrowse] HandLandmarker initialization failed on GPU and CPU:', {
+        wasmPath,
         modelAssetPath,
-        delegate: 'CPU',
-      },
-    });
-    console.info('[AirBrowse] HandLandmarker initialized successfully with CPU delegate.');
-    return landmarker;
+        gpuError: gpuDetail,
+        cpuError: cpuDetail,
+        error: cpuError,
+      });
+      throw new Error(
+        `MediaPipe HandLandmarker could not be initialized. GPU: ${gpuDetail}. CPU: ${cpuDetail}.`
+      );
+    }
   }
 }

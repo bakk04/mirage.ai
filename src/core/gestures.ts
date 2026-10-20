@@ -23,6 +23,8 @@ import {
   RingBuffer,
 } from './math';
 
+const ZOOM_MOTION_THRESHOLD = 0.035;
+
 export enum RecognizerState {
   IDLE = 'IDLE',
   MOVE = 'MOVE',
@@ -39,7 +41,7 @@ export type GestureEvent =
   | { type: 'CLICK'; x: number; y: number }
   | { type: 'SCROLL_DELTA'; dy: number; speed: number; direction: 'UP' | 'DOWN' | 'NEUTRAL'; frameScale: number }
   | { type: 'SCROLL_END' }
-  | { type: 'COMMAND'; command: 'REFRESH' | 'CLOSE_WINDOW' }
+  | { type: 'COMMAND'; command: 'REFRESH' | 'CLOSE_WINDOW' | 'TOGGLE_KEYBOARD' | 'ZOOM_IN' | 'ZOOM_OUT' }
   | { type: 'STATE_CHANGE'; state: RecognizerState };
 
 interface TimestampedCursor {
@@ -48,8 +50,16 @@ interface TimestampedCursor {
   timestamp: number;
 }
 
+interface TimestampedPalm {
+  x: number;
+  y: number;
+  timestamp: number;
+}
+
 export class GestureRecognizer {
   private state: RecognizerState = RecognizerState.IDLE;
+  private lastConfidence = 0;
+  private lastDecisionReason = 'Waiting for a valid hand';
 
   // Smoothing filter for palm center (Landmark 9)
   private palmFilter = new Point2DFilter({
@@ -65,6 +75,7 @@ export class GestureRecognizer {
 
   // Ring buffer of cursor positions (screen normalized 0..1)
   private readonly cursorHistory = new RingBuffer<TimestampedCursor>(60);
+  private readonly palmHistory = new RingBuffer<TimestampedPalm>(12);
 
   // Current screen cursor coordinates (smoothed Landmark 9 mapped to screen)
   private currentScreenCursor: Point2D = { x: 0.5, y: 0.5 };
@@ -81,6 +92,7 @@ export class GestureRecognizer {
   private pinchStartTime = 0;
   private lastClickTimestamp = -Infinity;
   private lastScrollTimestamp = 0;
+  private lastCommandMotion = 0;
 
   // Scroll state
   private neutralY = 0.5;
@@ -94,6 +106,7 @@ export class GestureRecognizer {
   private commandPose: 'OPEN' | 'THREE' | null = null;
   private commandStableFrames = 0;
   private commandTriggeredPose: 'OPEN' | 'THREE' | null = null;
+  private zoomTriggered = false;
 
   public setInteractionSettings(
     smoothing: 'low' | 'med' | 'high',
@@ -118,6 +131,7 @@ export class GestureRecognizer {
     this.palmFilter.reset();
     this.indexFilter.reset();
     this.cursorHistory.clear();
+    this.palmHistory.clear();
     this.currentScreenCursor = { x: 0.5, y: 0.5 };
     this.smoothedPalmCamera = { x: 0.5, y: 0.5 };
     this.frozenCursor = { x: 0.5, y: 0.5 };
@@ -126,17 +140,23 @@ export class GestureRecognizer {
     this.pinchStartTime = 0;
     this.lastClickTimestamp = -Infinity;
     this.lastScrollTimestamp = 0;
+    this.lastCommandMotion = 0;
     this.neutralY = 0.5;
     this.lastValidTimestamp = 0;
     this.commandPose = null;
     this.commandStableFrames = 0;
     this.commandTriggeredPose = null;
+    this.zoomTriggered = false;
+    this.lastConfidence = 0;
+    this.lastDecisionReason = 'Waiting for a valid hand';
   }
 
   private resetTrackingState(): void {
     this.pinchStableFrames = 0;
     this.peaceStableFrames = 0;
     this.pinchStartTime = 0;
+    this.palmHistory.clear();
+    this.lastScrollTimestamp = 0;
   }
 
   public getCurrentState(): RecognizerState {
@@ -156,6 +176,22 @@ export class GestureRecognizer {
     return this.currentScreenCursor;
   }
 
+  public getDiagnostics(): {
+    confidence: number;
+    stabilityFrames: number;
+    reason: string;
+  } {
+    return {
+      confidence: this.lastConfidence,
+      stabilityFrames: Math.max(
+        this.pinchStableFrames,
+        this.peaceStableFrames,
+        this.commandStableFrames
+      ),
+      reason: this.lastDecisionReason,
+    };
+  }
+
   /**
    * Main evaluation loop.
    * Consumes MediaPipe landmarks, checks confidence, and emits mutually exclusive events.
@@ -166,6 +202,7 @@ export class GestureRecognizer {
     confidence: number = 1.0
   ): GestureEvent[] {
     const events: GestureEvent[] = [];
+    this.lastConfidence = confidence;
 
     // 1. SIGNAL QUALITY & TRACKING LOSS CHECK
     const isFrameValid =
@@ -176,6 +213,12 @@ export class GestureRecognizer {
       handScale(landmarks) >= MIN_HAND_SCALE_EPSILON;
 
     if (!isFrameValid) {
+      this.lastDecisionReason =
+        landmarks === null
+          ? 'Ignored: no hand landmarks'
+          : confidence < GESTURE_CONFIG.minConfidence
+            ? `Ignored: confidence ${confidence.toFixed(2)} below ${GESTURE_CONFIG.minConfidence.toFixed(2)}`
+            : 'Ignored: invalid or degenerate landmarks';
       if (this.lastValidTimestamp === 0) {
         this.state = RecognizerState.IDLE;
         return events;
@@ -222,6 +265,10 @@ export class GestureRecognizer {
       y: this.currentScreenCursor.y,
       timestamp,
     });
+    // Keep command-motion measurements close to the observed landmarks. The
+    // filtered palm is intentionally used for scroll output, but using it for
+    // command displacement would delay short zoom/keyboard movements.
+    this.palmHistory.push({ x: palm.x, y: palm.y, timestamp });
 
     // 3. POSE CLASSIFICATION METRICS
     const distThumbIndex = dist(thumbTip, indexTip);
@@ -229,8 +276,11 @@ export class GestureRecognizer {
 
     const isPeaceSign = this.classifyPeaceSign(landmarks, wrist);
     const isThreeFinger = this.classifyThreeFinger(landmarks, wrist);
-    const isOpenHand = this.classifyOpenHand(landmarks, wrist);
-    const commandPose = isOpenHand ? 'OPEN' : isThreeFinger ? 'THREE' : null;
+    const isPinching = pinchRatio < GESTURE_CONFIG.pinchExitRatio;
+    const isFourFinger = !isPinching && this.classifyFourFinger(landmarks, wrist);
+    const isFiveFinger = !isPinching && this.classifyFiveFinger(landmarks, wrist);
+    const commandPose = isFiveFinger ? 'OPEN' : isThreeFinger ? 'THREE' : null;
+    const motion = this.getPalmMotion();
     if (commandPose === null) {
       this.commandPose = null;
       this.commandStableFrames = 0;
@@ -250,20 +300,81 @@ export class GestureRecognizer {
     // implementation only checked them while scrolling and required the hand
     // to remain a peace sign, making three-finger refresh unreachable.
     if (
+      this.state !== RecognizerState.PINCH_PENDING &&
       commandPose !== null &&
       commandPose === this.commandPose &&
       this.commandStableFrames >= GESTURE_CONFIG.scrollStableFrames &&
       this.commandTriggeredPose !== commandPose &&
-      timestamp - this.lastCommandTimestamp >= GESTURE_CONFIG.actionCooldownMs &&
-      ((commandPose === 'THREE' && this.enableRefreshGesture) ||
-        (commandPose === 'OPEN' && this.enableDangerousGestures))
+      timestamp - this.lastCommandTimestamp >= GESTURE_CONFIG.actionCooldownMs
+    ) {
+      // A deliberate horizontal movement turns an open hand into the keyboard
+      // compound gesture instead of allowing the dangerous close action.
+      if (commandPose === 'OPEN' && Math.abs(motion.dx) >= 0.12) {
+        this.lastCommandTimestamp = timestamp;
+        this.commandTriggeredPose = commandPose;
+        events.push({ type: 'COMMAND', command: 'TOGGLE_KEYBOARD' });
+        this.lastDecisionReason = 'Keyboard toggle: stable open hand with horizontal motion';
+        return events;
+      }
+      if (
+        (commandPose === 'THREE' && this.enableRefreshGesture) ||
+        (commandPose === 'OPEN' &&
+          this.enableDangerousGestures &&
+          Math.abs(motion.dx) < 0.12)
+      ) {
+        this.lastCommandTimestamp = timestamp;
+        this.commandTriggeredPose = commandPose;
+        events.push({
+          type: 'COMMAND',
+          command: commandPose === 'THREE' ? 'REFRESH' : 'CLOSE_WINDOW',
+        });
+        this.lastDecisionReason = commandPose === 'THREE'
+          ? 'Refresh: stable three-finger pose'
+          : 'Window close: explicit dangerous gesture enabled';
+        return events;
+      }
+    }
+
+    if (!isFourFinger) {
+      this.zoomTriggered = false;
+    }
+    if (
+      isFourFinger &&
+      Math.abs(motion.dy) >= ZOOM_MOTION_THRESHOLD &&
+      !this.zoomTriggered &&
+      timestamp - this.lastCommandTimestamp >= GESTURE_CONFIG.actionCooldownMs
     ) {
       this.lastCommandTimestamp = timestamp;
-      this.commandTriggeredPose = commandPose;
-      events.push({
-        type: 'COMMAND',
-        command: commandPose === 'THREE' ? 'REFRESH' : 'CLOSE_WINDOW',
-      });
+      this.zoomTriggered = true;
+      events.push({ type: 'COMMAND', command: motion.dy < 0 ? 'ZOOM_IN' : 'ZOOM_OUT' });
+      this.lastDecisionReason = motion.dy < 0
+        ? 'Zoom in: four-finger pose moved upward'
+        : 'Zoom out: four-finger pose moved downward';
+      return events;
+    }
+
+    // Command poses are exclusive. Even when a command is disabled, cooling
+    // down, or waiting for enough movement, do not let the same landmarks
+    // fall through to pinch, pointer, or scroll recognition.
+    if (
+      this.state !== RecognizerState.PINCH_PENDING &&
+      (isFiveFinger || isFourFinger || isThreeFinger)
+    ) {
+      if (this.state === RecognizerState.SCROLLING) {
+        this.state = RecognizerState.MOVE;
+        this.peaceStableFrames = 0;
+        events.push({ type: 'SCROLL_END' });
+      }
+      this.state = RecognizerState.MOVE;
+      this.pinchStableFrames = 0;
+      this.peaceStableFrames = 0;
+      this.lastDecisionReason = isFiveFinger
+        ? this.enableDangerousGestures
+          ? 'Five-finger close pose reserved until stable'
+          : 'Five-finger close ignored: enable it in Settings'
+        : isFourFinger
+          ? 'Four-finger zoom pose reserved'
+          : 'Three-finger refresh pose reserved';
       return events;
     }
 
@@ -275,13 +386,18 @@ export class GestureRecognizer {
         this.peaceStableFrames = 0;
         events.push({ type: 'SCROLL_END' });
         events.push({ type: 'STATE_CHANGE', state: this.state });
+        this.lastDecisionReason = 'Scroll ended: peace-sign pose released';
         return events;
       }
 
       // Scroll speed = joystick: (currentY - neutralY)
       // Hand above neutral (camera Y < neutralY) => page moves up
       // Hand below neutral (camera Y > neutralY) => page moves down
-      const diffY = this.smoothedPalmCamera.y - this.neutralY;
+      // Use the current decoded landmark for the joystick displacement. The
+      // cursor remains filtered, but using the heavily filtered palm here can
+      // keep short downward movements inside the dead zone and make scrolling
+      // appear one-directional.
+      const diffY = palm.y - this.neutralY;
       const absDiff = Math.abs(diffY);
 
       if (absDiff < GESTURE_CONFIG.scrollDeadZone) {
@@ -293,9 +409,15 @@ export class GestureRecognizer {
           direction: 'NEUTRAL',
           frameScale: 0,
         });
+        this.lastDecisionReason = 'Scroll held in dead zone';
       } else {
         const excess = absDiff - GESTURE_CONFIG.scrollDeadZone;
-        const nonLinearSpeed = Math.pow(excess, GESTURE_CONFIG.scrollExponent) * GESTURE_CONFIG.scrollGain;
+        const displacementSpeed = Math.pow(excess, GESTURE_CONFIG.scrollExponent) * GESTURE_CONFIG.scrollGain;
+        const velocitySpeed = Math.min(
+          Math.abs(motion.vy) * 1100,
+          GESTURE_CONFIG.scrollMaxSpeedPxPerFrame * 1.5
+        );
+        const nonLinearSpeed = displacementSpeed + velocitySpeed;
         const clampedSpeed = Math.min(nonLinearSpeed, GESTURE_CONFIG.scrollMaxSpeedPxPerFrame);
         const elapsedMs = this.lastScrollTimestamp > 0
           ? Math.max(1, timestamp - this.lastScrollTimestamp)
@@ -306,15 +428,20 @@ export class GestureRecognizer {
         // Moving page up means scrollBy with negative top (e.g. -speed).
         // Moving page down means scrollBy with positive top (+speed).
         const direction = diffY < 0 ? 'UP' : 'DOWN';
-        const speed = diffY < 0 ? -clampedSpeed : clampedSpeed;
+        const frameSpeed = Math.min(
+          clampedSpeed * frameScale,
+          GESTURE_CONFIG.scrollMaxSpeedPxPerFrame
+        );
+        const speed = diffY < 0 ? -frameSpeed : frameSpeed;
 
         events.push({
           type: 'SCROLL_DELTA',
           dy: diffY,
-          speed: speed * frameScale,
+          speed,
           direction,
           frameScale,
         });
+        this.lastDecisionReason = `Scrolling ${direction.toLowerCase()}`;
       }
 
       this.lastScrollTimestamp = timestamp;
@@ -343,6 +470,7 @@ export class GestureRecognizer {
           x: this.frozenCursor.x,
           y: this.frozenCursor.y,
         });
+        this.lastDecisionReason = 'Click: quick pinch released';
         this.lastClickTimestamp = timestamp;
       }
       // If held >= 350 ms: no click emitted
@@ -363,11 +491,14 @@ export class GestureRecognizer {
       if (this.peaceStableFrames >= GESTURE_CONFIG.scrollStableFrames) {
         this.state = RecognizerState.SCROLLING;
         // On entry, store the hand's Y as the neutral point
-        this.neutralY = this.smoothedPalmCamera.y;
+        this.neutralY = palm.y;
         this.lastScrollTimestamp = timestamp;
         events.push({ type: 'STATE_CHANGE', state: this.state });
+        this.lastDecisionReason = 'Scroll armed: stable peace-sign pose';
         return events;
       }
+
+      this.lastDecisionReason = `Scroll pending: ${this.peaceStableFrames}/${GESTURE_CONFIG.scrollStableFrames} stable frames`;
 
       return events;
     } else {
@@ -392,9 +523,11 @@ export class GestureRecognizer {
           : { x: this.currentScreenCursor.x, y: this.currentScreenCursor.y };
 
         events.push({ type: 'STATE_CHANGE', state: this.state });
+        this.lastDecisionReason = 'Pinch armed: waiting for release';
         return events;
       }
 
+      this.lastDecisionReason = `Pinch pending: ${this.pinchStableFrames}/${GESTURE_CONFIG.pinchStableFrames} stable frames`;
       return events;
     } else {
       this.pinchStableFrames = 0;
@@ -402,6 +535,7 @@ export class GestureRecognizer {
 
     // 3. Relaxed open hand => MOVE
     this.state = RecognizerState.MOVE;
+    this.lastDecisionReason = 'Pointer tracking active; no command pose';
     events.push({
       type: 'HOVER_MOVE',
       x: this.currentScreenCursor.x,
@@ -419,25 +553,29 @@ export class GestureRecognizer {
     landmarks: Array<Point2D | Point3D>,
     wrist: Point2D | Point3D
   ): boolean {
-    const indexExtended = isFingerExtended(
+    const indexExtended = this.isExtended(
       landmarks[LANDMARK_INDEX.INDEX_TIP],
       landmarks[LANDMARK_INDEX.INDEX_PIP],
-      wrist
+      wrist,
+      1.12
     );
-    const middleExtended = isFingerExtended(
+    const middleExtended = this.isExtended(
       landmarks[LANDMARK_INDEX.MIDDLE_TIP],
       landmarks[LANDMARK_INDEX.MIDDLE_PIP],
-      wrist
+      wrist,
+      1.12
     );
-    const ringCurled = isFingerCurled(
+    const ringCurled = this.isCurled(
       landmarks[LANDMARK_INDEX.RING_TIP],
       landmarks[LANDMARK_INDEX.RING_PIP],
-      wrist
+      wrist,
+      0.98
     );
-    const pinkyCurled = isFingerCurled(
+    const pinkyCurled = this.isCurled(
       landmarks[LANDMARK_INDEX.PINKY_TIP],
       landmarks[LANDMARK_INDEX.PINKY_PIP],
-      wrist
+      wrist,
+      0.98
     );
 
     return indexExtended && middleExtended && ringCurled && pinkyCurled;
@@ -448,10 +586,10 @@ export class GestureRecognizer {
     wrist: Point2D | Point3D
   ): boolean {
     return (
-      isFingerExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist) &&
-      isFingerExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist) &&
-      isFingerExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist) &&
-      isFingerCurled(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist)
+      this.isExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist, 1.12) &&
+      this.isCurled(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist, 0.98)
     );
   }
 
@@ -465,5 +603,67 @@ export class GestureRecognizer {
       isFingerExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist) &&
       isFingerExtended(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist)
     );
+  }
+
+  private classifyFourFinger(
+    landmarks: Array<Point2D | Point3D>,
+    wrist: Point2D | Point3D
+  ): boolean {
+    return (
+      this.isExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist, 1.12) &&
+      !this.isThumbExtended(landmarks, wrist)
+    );
+  }
+
+  private classifyFiveFinger(
+    landmarks: Array<Point2D | Point3D>,
+    wrist: Point2D | Point3D
+  ): boolean {
+    return this.classifyOpenHand(landmarks, wrist) && this.isThumbExtended(landmarks, wrist);
+  }
+
+  private isThumbExtended(
+    landmarks: Array<Point2D | Point3D>,
+    wrist: Point2D | Point3D
+  ): boolean {
+    return (
+      dist(landmarks[LANDMARK_INDEX.THUMB_TIP], wrist) >
+      dist(landmarks[LANDMARK_INDEX.THUMB_IP], wrist) * 1.1
+    );
+  }
+
+  private isExtended(
+    tip: Point2D | Point3D,
+    pip: Point2D | Point3D,
+    wrist: Point2D | Point3D,
+    ratio = 1.03
+  ): boolean {
+    return isFingerExtended(tip, pip, wrist, ratio);
+  }
+
+  private isCurled(
+    tip: Point2D | Point3D,
+    pip: Point2D | Point3D,
+    wrist: Point2D | Point3D,
+    ratio = 1.12
+  ): boolean {
+    return isFingerCurled(tip, pip, wrist, ratio);
+  }
+
+  private getPalmMotion(): { dx: number; dy: number; vx: number; vy: number } {
+    const samples = this.palmHistory.toArray();
+    if (samples.length < 2) return { dx: 0, dy: 0, vx: 0, vy: 0 };
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const dt = Math.max(1, last.timestamp - first.timestamp);
+    return {
+      dx: last.x - first.x,
+      dy: last.y - first.y,
+      vx: (last.x - first.x) / dt * 1000,
+      vy: (last.y - first.y) / dt * 1000,
+    };
   }
 }

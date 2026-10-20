@@ -121,10 +121,48 @@ export async function initializeCamera(config: CameraConfig = {}): Promise<HTMLV
       video.removeEventListener('error', handleError);
       try {
         await video.play();
+        await waitForVideoMetadata();
+        console.info('[AirBrowse] Webcam dimensions ready:', {
+          width: video.videoWidth,
+          height: video.videoHeight,
+          readyState: video.readyState,
+        });
         resolve(video);
       } catch (playError) {
-        cleanupAfterFailure(new CameraAccessError('Failed to start webcam video playback.', playError));
+        cleanupAfterFailure(
+          playError instanceof CameraAccessError
+            ? playError
+            : new CameraAccessError('Failed to start webcam video playback.', playError)
+        );
       }
+    };
+
+    const waitForVideoMetadata = async (): Promise<void> => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) return;
+      await new Promise<void>((metadataResolve, metadataReject) => {
+        const timeout = window.setTimeout(() => {
+          video.removeEventListener('loadedmetadata', handleMetadata);
+          metadataReject(
+            new CameraAccessError(
+              `Webcam metadata unavailable (video dimensions: ${video.videoWidth}x${video.videoHeight}).`
+            )
+          );
+        }, 5000);
+        const handleMetadata = () => {
+          window.clearTimeout(timeout);
+          video.removeEventListener('loadedmetadata', handleMetadata);
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            metadataResolve();
+          } else {
+            metadataReject(
+              new CameraAccessError(
+                `Webcam reported invalid dimensions (${video.videoWidth}x${video.videoHeight}).`
+              )
+            );
+          }
+        };
+        video.addEventListener('loadedmetadata', handleMetadata, { once: true });
+      });
     };
 
     const handleError = (e: Event) => {
@@ -136,9 +174,21 @@ export async function initializeCamera(config: CameraConfig = {}): Promise<HTMLV
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       video
         .play()
-        .then(() => resolve(video))
+        .then(async () => {
+          await waitForVideoMetadata();
+          console.info('[AirBrowse] Webcam dimensions ready:', {
+            width: video.videoWidth,
+            height: video.videoHeight,
+            readyState: video.readyState,
+          });
+          resolve(video);
+        })
         .catch((err) => {
-          cleanupAfterFailure(new CameraAccessError('Failed to start webcam video playback.', err));
+          cleanupAfterFailure(
+            err instanceof CameraAccessError
+              ? err
+              : new CameraAccessError('Failed to start webcam video playback.', err)
+          );
         });
     } else {
       video.addEventListener('loadeddata', handleLoadedData);

@@ -57,6 +57,8 @@ const gestureGuide = [
   { icon: Hand, title: 'Click', instruction: 'Pinch thumb and index, then release.', action: 'Activate the target' },
   { icon: ArrowUp, title: 'Scroll', instruction: 'Raise two fingers and move vertically.', action: 'Scroll the page' },
   { icon: RefreshCw, title: 'Refresh', instruction: 'Hold three fingers steadily.', action: 'Refresh the page' },
+  { icon: ArrowUp, title: 'Zoom', instruction: 'Move four fingers up or down.', action: 'Zoom in or out' },
+  { icon: Hand, title: 'Keyboard', instruction: 'Move an open five-finger hand sideways.', action: 'Toggle the virtual keyboard' },
   { icon: Keyboard, title: 'Type', instruction: 'Open the keyboard, point, then pinch.', action: 'Enter text in a focused field' },
 ];
 
@@ -236,7 +238,7 @@ export default function App() {
             <SettingRow label="Click mode"><select aria-label="Click mode" value={config.clickMode} onChange={(e) => updateSetting({ clickMode: e.target.value as AirBrowseConfig['clickMode'] })}><option value="single">Single click</option><option value="double">Double click</option></select></SettingRow>
             <SettingRow label="Left-handed mode"><input aria-label="Left-handed mode" type="checkbox" checked={config.leftHandedMode} onChange={(e) => updateSetting({ leftHandedMode: e.target.checked })} /></SettingRow>
             <SettingRow label="Three-finger refresh"><input aria-label="Three-finger refresh" type="checkbox" checked={config.enableRefreshGesture} onChange={(e) => updateSetting({ enableRefreshGesture: e.target.checked })} /></SettingRow>
-            <SettingRow label="Open-hand window close"><input aria-label="Open-hand window close" type="checkbox" checked={config.enableDangerousGestures} onChange={(e) => updateSetting({ enableDangerousGestures: e.target.checked })} /></SettingRow>
+            <SettingRow label="Five-finger window close"><input aria-label="Five-finger window close" type="checkbox" checked={config.enableDangerousGestures} onChange={(e) => updateSetting({ enableDangerousGestures: e.target.checked })} /></SettingRow>
             <SettingRow label="New tab action"><select aria-label="New tab action" value={config.openMode} onChange={(e) => updateSetting({ openMode: e.target.value as AirBrowseConfig['openMode'] })}><option value="tab">New tab</option><option value="window">New window</option></select></SettingRow>
             <div className="gemini-panel"><div className="panel-title"><Brain size={17} /><strong>Page summary</strong></div><p>Use Gemini to summarize the active page.</p><input aria-label="Gemini API key" type="password" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} onBlur={() => saveGeminiApiKey(geminiKey)} placeholder="Gemini API key" /><button className="summary-button" onClick={summarizePage} disabled={isSummarizing}>{isSummarizing ? 'Summarizing…' : 'Summarize page'}</button>{summaryError && <p className="inline-error" role="alert">{summaryError}</p>}{summary && <div className="summary-output">{summary}</div>}</div>
           </section>

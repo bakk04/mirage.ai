@@ -132,9 +132,12 @@ chrome.runtime.onMessage.addListener(
     if (msg.type === BACKGROUND_MESSAGES.CLOSE_WINDOW) {
       (async () => {
         try {
-          const currentWindow = await chrome.windows.getCurrent();
+          const windowId = sender.tab?.windowId;
+          const currentWindow = windowId !== undefined
+            ? { id: windowId }
+            : await chrome.windows.getCurrent();
           if (currentWindow.id === undefined) {
-            sendResponse({ success: false, error: 'No current window' });
+            sendResponse({ success: false, error: 'No sender window' });
             return;
           }
           await chrome.windows.remove(currentWindow.id);
