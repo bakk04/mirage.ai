@@ -144,6 +144,8 @@ export class ToolbarUI {
       transform: 'translateY(-50%)',
       zIndex: '2147483646',
       pointerEvents: 'none',
+      visibility: 'hidden',
+      opacity: '0',
       display: 'flex',
       flexDirection: 'column',
       userSelect: 'none',
@@ -157,6 +159,7 @@ export class ToolbarUI {
         all: initial;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       }
+
       .toolbar-container {
         display: flex;
         flex-direction: column;
@@ -422,6 +425,14 @@ export class ToolbarUI {
     }
 
     return { consumed: true, dwellProgress: progress };
+  }
+
+  /** Shows the controls only while gesture control is actively running. */
+  public setVisible(visible: boolean): void {
+    if (!this.host) return;
+    this.host.style.visibility = visible ? 'visible' : 'hidden';
+    this.host.style.opacity = visible ? '1' : '0';
+    if (!visible) this.clearHover();
   }
 
   /**

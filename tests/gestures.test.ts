@@ -150,6 +150,47 @@ describe('3-Gesture System Suite', () => {
     expect(recognizer.getCurrentState()).toBe(RecognizerState.MOVE);
   });
 
+  it('three stable fingers produce one refresh command and re-arm after release', () => {
+    const threeFingerHand = createSyntheticHand({
+      [LANDMARK_INDEX.INDEX_TIP]: { x: 0.42, y: 0.20 },
+      [LANDMARK_INDEX.MIDDLE_TIP]: { x: 0.50, y: 0.18 },
+      [LANDMARK_INDEX.RING_TIP]: { x: 0.58, y: 0.20 },
+      [LANDMARK_INDEX.PINKY_TIP]: { x: 0.62, y: 0.68 },
+    });
+
+    const events: GestureEvent[] = [];
+    events.push(...recognizer.update(threeFingerHand, 0));
+    events.push(...recognizer.update(threeFingerHand, 30));
+    events.push(...recognizer.update(threeFingerHand, 60));
+
+    expect(events.filter((event) => event.type === 'COMMAND')).toEqual([
+      { type: 'COMMAND', command: 'REFRESH' },
+    ]);
+  });
+
+  it('cooldown prevents a second rapid pinch click', () => {
+    const pinchedHand = createSyntheticHand({
+      [LANDMARK_INDEX.THUMB_TIP]: { x: 0.42, y: 0.31 },
+      [LANDMARK_INDEX.INDEX_TIP]: { x: 0.42, y: 0.30 },
+    });
+    const releasedHand = createSyntheticHand({
+      [LANDMARK_INDEX.THUMB_TIP]: { x: 0.28, y: 0.52 },
+      [LANDMARK_INDEX.INDEX_TIP]: { x: 0.42, y: 0.30 },
+    });
+    const events: GestureEvent[] = [];
+
+    const pinch = (start: number) => {
+      events.push(...recognizer.update(pinchedHand, start));
+      events.push(...recognizer.update(pinchedHand, start + 30));
+      events.push(...recognizer.update(pinchedHand, start + 60));
+      events.push(...recognizer.update(releasedHand, start + 120));
+    };
+
+    pinch(0);
+    pinch(200);
+    expect(events.filter((event) => event.type === 'CLICK')).toHaveLength(1);
+  });
+
   it('peace sign + hand up = scroll up, 0 clicks', () => {
     const allEvents: GestureEvent[] = [];
 

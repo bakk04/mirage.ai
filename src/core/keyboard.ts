@@ -89,8 +89,6 @@ export function typeCharacter(char: string): boolean {
       })
     );
 
-    // Standard fallback event for Vue/Angular/vanilla listeners
-    active.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     active.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
     return true;
@@ -188,7 +186,6 @@ export function backspaceCharacter(): boolean {
       })
     );
 
-    active.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     active.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
     return true;
   }
@@ -247,4 +244,3 @@ export function insertNewline(): boolean {
 
   return false;
 }
-

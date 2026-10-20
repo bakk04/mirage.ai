@@ -12,5 +12,4 @@ export * from './audio';
 export * from './writing';
 export * from './gestures';
 export * from './interaction';
-export * from './cnn';
 export * from './keyboard';

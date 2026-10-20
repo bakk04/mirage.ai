@@ -8,7 +8,9 @@ import { summarizeText } from './gemini';
 export const BACKGROUND_MESSAGES = {
   SUMMARIZE_PAGE: 'SUMMARIZE_PAGE',
   ZOOM: 'ZOOM',
+  REFRESH: 'REFRESH',
   CLOSE_TAB: 'CLOSE_TAB',
+  CLOSE_WINDOW: 'CLOSE_WINDOW',
   NEW_TAB: 'NEW_TAB',
   GO_BACK: 'GO_BACK',
   GO_FORWARD: 'GO_FORWARD',
@@ -43,7 +45,7 @@ export interface SummarizePageRequest {
 console.log('[AirBrowse] Background service worker initialized.');
 
 async function getActiveTabId(senderTabId?: number): Promise<number | undefined> {
-  if (senderTabId) return senderTabId;
+  if (senderTabId !== undefined) return senderTabId;
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return activeTab?.id;
 }
@@ -62,6 +64,7 @@ chrome.runtime.onMessage.addListener(
       type?: string;
       delta?: number;
       apiKey?: string;
+      openMode?: 'tab' | 'window';
     };
 
     // 1. ZOOM: Adjust tab zoom clamped between 0.25 and 5.0
@@ -69,7 +72,7 @@ chrome.runtime.onMessage.addListener(
       (async () => {
         try {
           const tabId = await getActiveTabId(sender.tab?.id);
-          if (!tabId) {
+          if (tabId === undefined) {
             sendResponse({ success: false, error: 'No active tab' });
             return;
           }
@@ -86,17 +89,37 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
-    // 2. CLOSE_TAB: Close current tab
+    // 2. REFRESH: Use the tab API so refresh remains independent of page DOM.
+    if (msg.type === BACKGROUND_MESSAGES.REFRESH) {
+      (async () => {
+        try {
+          const tabId = await getActiveTabId(sender.tab?.id);
+          if (tabId === undefined) {
+            sendResponse({ success: false, error: 'No active tab' });
+            return;
+          }
+          await chrome.tabs.reload(tabId);
+          sendResponse({ success: true });
+        } catch (error) {
+          console.error('[AirBrowse] Refresh failed:', error);
+          sendResponse({ success: false, error: String(error) });
+        }
+      })();
+      return true;
+    }
+
+    // 3. CLOSE_TAB: Close current tab
     if (msg.type === BACKGROUND_MESSAGES.CLOSE_TAB) {
       (async () => {
         try {
           const tabId = await getActiveTabId(sender.tab?.id);
-          if (tabId) {
+          if (tabId !== undefined) {
             await chrome.tabs.remove(tabId);
             sendResponse({ success: true });
           } else {
             sendResponse({ success: false, error: 'No tab found to close' });
           }
+
         } catch (err) {
           console.error('[AirBrowse] Close tab failed:', err);
           sendResponse({ success: false, error: String(err) });
@@ -105,12 +128,36 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
-    // 3. NEW_TAB: Open new browser tab
+    // 3. CLOSE_WINDOW: Close the current browser window.
+    if (msg.type === BACKGROUND_MESSAGES.CLOSE_WINDOW) {
+      (async () => {
+        try {
+          const currentWindow = await chrome.windows.getCurrent();
+          if (currentWindow.id === undefined) {
+            sendResponse({ success: false, error: 'No current window' });
+            return;
+          }
+          await chrome.windows.remove(currentWindow.id);
+          sendResponse({ success: true });
+        } catch (err) {
+          console.error('[AirBrowse] Close window failed:', err);
+          sendResponse({ success: false, error: String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // 4. NEW_TAB: Open new browser tab
     if (msg.type === BACKGROUND_MESSAGES.NEW_TAB) {
       (async () => {
         try {
-          const tab = await chrome.tabs.create({});
-          sendResponse({ success: true, tabId: tab.id });
+          if (msg.openMode === 'window') {
+            const createdWindow = await chrome.windows.create({ focused: true });
+            sendResponse({ success: true, windowId: createdWindow?.id });
+          } else {
+            const tab = await chrome.tabs.create({});
+            sendResponse({ success: true, tabId: tab.id });
+          }
         } catch (err) {
           console.error('[AirBrowse] Open tab failed:', err);
           sendResponse({ success: false, error: String(err) });
@@ -124,7 +171,7 @@ chrome.runtime.onMessage.addListener(
       (async () => {
         try {
           const tabId = await getActiveTabId(sender.tab?.id);
-          if (tabId) {
+          if (tabId !== undefined) {
             if (typeof chrome.tabs.goBack === 'function') {
               await chrome.tabs.goBack(tabId);
             } else {
@@ -150,7 +197,7 @@ chrome.runtime.onMessage.addListener(
       (async () => {
         try {
           const tabId = await getActiveTabId(sender.tab?.id);
-          if (tabId) {
+          if (tabId !== undefined) {
             if (typeof chrome.tabs.goForward === 'function') {
               await chrome.tabs.goForward(tabId);
             } else {
@@ -194,7 +241,7 @@ chrome.runtime.onMessage.addListener(
  */
 async function handleSummarizePage(apiKey: string): Promise<string> {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!activeTab?.id) {
+  if (activeTab?.id === undefined) {
     throw new Error('No active browser tab found.');
   }
 

@@ -33,18 +33,19 @@ export function getDeepElementFromPoint(x: number, y: number): Element | null {
   if (toolbarHost) toolbarHost.style.pointerEvents = 'none';
   if (keyboardHost) keyboardHost.style.pointerEvents = 'none';
 
-  let el = document.elementFromPoint(x, y);
-  while (el && el.shadowRoot) {
-    const inner = el.shadowRoot.elementFromPoint(x, y);
-    if (!inner || inner === el) break;
-    el = inner;
+  try {
+    let el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  } finally {
+    if (overlayHost) overlayHost.style.pointerEvents = prevOverlay;
+    if (toolbarHost) toolbarHost.style.pointerEvents = prevToolbar;
+    if (keyboardHost) keyboardHost.style.pointerEvents = prevKeyboard;
   }
-
-  if (overlayHost) overlayHost.style.pointerEvents = prevOverlay;
-  if (toolbarHost) toolbarHost.style.pointerEvents = prevToolbar;
-  if (keyboardHost) keyboardHost.style.pointerEvents = prevKeyboard;
-
-  return el;
 }
 
 /**

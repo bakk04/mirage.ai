@@ -42,6 +42,16 @@ class AirBrowseContentPipeline {
   // Active hand tracking & Telemetry
   private lastTrackedPalm: { x: number; y: number } | null = null;
   private latencySamples: number[] = [];
+  private diagnostic = {
+    camera: 'OFF',
+    mediapipe: 'OFF',
+    hands: 0,
+    landmarks: 'INVALID',
+    gesture: 'IDLE',
+    lastCommand: 'none',
+    commandResult: 'none',
+    error: '',
+  };
 
   constructor() {
     this.gestureRecognizer = new GestureRecognizer();
@@ -58,6 +68,12 @@ class AirBrowseContentPipeline {
   public async start(): Promise<void> {
     try {
       this.config = await loadConfig();
+      this.gestureRecognizer.setInteractionSettings(
+        this.config.cursorSmoothing,
+        this.config.leftHandedMode,
+        this.config.enableRefreshGesture,
+        this.config.enableDangerousGestures
+      );
       console.log('[AirBrowse] Initialized with config:', this.config);
 
       this.attachMessageListener();
@@ -85,6 +101,7 @@ class AirBrowseContentPipeline {
       if (!this.landmarker) {
         console.log('[AirBrowse] Loading offline MediaPipe HandLandmarker...');
         this.landmarker = await initializeHandLandmarker();
+        this.diagnostic.mediapipe = 'READY';
         console.log('[AirBrowse] HandLandmarker ready.');
       }
 
@@ -95,12 +112,17 @@ class AirBrowseContentPipeline {
           this.pause();
         },
       });
+      this.diagnostic.camera = 'READY';
       console.log('[AirBrowse] Webcam active.');
 
       this.isRunning = true;
+      this.toolbar.setVisible(true);
       this.loop = this.loop.bind(this);
       this.animationFrameId = requestAnimationFrame(this.loop);
     } catch (error) {
+      this.diagnostic.error = error instanceof Error ? error.message : String(error);
+      this.diagnostic.camera = this.video ? 'ERROR' : this.diagnostic.camera;
+      this.diagnostic.mediapipe = this.landmarker ? 'READY' : 'ERROR';
       console.error('[AirBrowse] Failed to resume pipeline:', error);
       this.pause();
     }
@@ -118,10 +140,14 @@ class AirBrowseContentPipeline {
       stopCamera(this.video);
       this.video = null;
     }
+    this.diagnostic.camera = 'OFF';
+    this.diagnostic.hands = 0;
+    this.diagnostic.landmarks = 'INVALID';
 
     this.gestureRecognizer.reset();
     this.interactionEngine.stopScrolling();
     this.overlay.hide();
+    this.toolbar.setVisible(false);
     this.overlay.cancelDwellProgress();
     this.toolbar.clearHover();
     this.keyboard.clearHover();
@@ -132,6 +158,12 @@ class AirBrowseContentPipeline {
   public async updateConfig(newConfig: AirBrowseConfig): Promise<void> {
     const wasEnabled = this.config.isEnabled;
     this.config = { ...newConfig };
+    this.gestureRecognizer.setInteractionSettings(
+      this.config.cursorSmoothing,
+      this.config.leftHandedMode,
+      this.config.enableRefreshGesture,
+      this.config.enableDangerousGestures
+    );
 
     if (!wasEnabled && this.config.isEnabled) {
       await this.resume();
@@ -148,8 +180,12 @@ class AirBrowseContentPipeline {
         const msg = message as { type?: string; payload?: AirBrowseConfig };
 
         if (msg.type === MESSAGE_TYPES.CONFIG_UPDATED && msg.payload) {
-          this.updateConfig(msg.payload);
-          sendResponse({ success: true });
+          this.updateConfig(msg.payload)
+            .then(() => sendResponse({ success: true, active: this.isRunning }))
+            .catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              sendResponse({ success: false, error: message, active: this.isRunning });
+            });
           return true;
         }
 
@@ -158,8 +194,14 @@ class AirBrowseContentPipeline {
           sendResponse({ text });
           return true;
         }
+
+        if (msg.type === 'TOGGLE_KEYBOARD') {
+          this.keyboard.toggle();
+          sendResponse({ success: true, open: this.keyboard.isOpen });
+          return true;
+        }
       }
-      return true;
+      return false;
     });
   }
 
@@ -237,7 +279,7 @@ class AirBrowseContentPipeline {
       case 'NEW_TAB':
         this.overlay.showToast('New Tab');
         if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-          chrome.runtime.sendMessage({ type: 'NEW_TAB' });
+          chrome.runtime.sendMessage({ type: 'NEW_TAB', openMode: this.config.openMode });
         }
         break;
 
@@ -274,6 +316,7 @@ class AirBrowseContentPipeline {
 
         let handLandmarks: NormalizedLandmark[] | null = null;
         let confidence = 1.0;
+        this.diagnostic.hands = results.landmarks?.length ?? 0;
 
         if (results.landmarks && results.landmarks.length > 0) {
           let chosenIndex = 0;
@@ -310,8 +353,14 @@ class AirBrowseContentPipeline {
           if (handLandmarks && handLandmarks[9]) {
             this.lastTrackedPalm = { x: handLandmarks[9].x, y: handLandmarks[9].y };
           }
+          this.diagnostic.landmarks =
+            handLandmarks?.length === 21 &&
+            handLandmarks.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+              ? 'VALID'
+              : 'INVALID';
         } else {
           this.lastTrackedPalm = null;
+          this.diagnostic.landmarks = 'INVALID';
         }
 
         // 1. Process frame through finite state machine
@@ -322,6 +371,7 @@ class AirBrowseContentPipeline {
         );
 
         const currentState = this.gestureRecognizer.getCurrentState();
+        this.diagnostic.gesture = currentState;
         this.updateDebugHUD(currentState, latencyMs);
 
         if (currentState === RecognizerState.IDLE) {
@@ -340,7 +390,9 @@ class AirBrowseContentPipeline {
           this.overlay.updateCursor(screenPxX, screenPxY, currentState);
 
           // 3. Hit-test On-Screen Toolbar for dwell
-          const toolbarRes = this.toolbar.updateCursor(screenPxX, screenPxY, timestamp);
+          const toolbarRes = this.keyboard.isOpen
+            ? { consumed: false }
+            : this.toolbar.updateCursor(screenPxX, screenPxY, timestamp);
 
           // 4. Hit-test Virtual Keyboard for dwell
           const keyboardRes = this.keyboard.isOpen
@@ -375,18 +427,37 @@ class AirBrowseContentPipeline {
 
                 // Priority 3: Underlying webpage DOM click
                 // Auto-opens virtual keyboard if target is editable!
-                this.interactionEngine.triggerClick(clickPxX, clickPxY, () => {
-                  this.keyboard.open();
-                });
+                const clickCount = this.config.clickMode === 'double' ? 2 : 1;
+                let clickSucceeded = true;
+                for (let clickIndex = 0; clickIndex < clickCount; clickIndex++) {
+                  clickSucceeded = this.interactionEngine.triggerClick(clickPxX, clickPxY, () => {
+                    this.keyboard.open();
+                  }) && clickSucceeded;
+                }
+                this.diagnostic.lastCommand = `${this.config.clickMode} click`;
+                this.diagnostic.commandResult = clickSucceeded ? 'SUCCESS' : 'FAILED';
                 break;
               }
 
               case 'SCROLL_DELTA':
-                this.interactionEngine.scrollByJoystick(ev.speed, screenPxX, screenPxY);
+                const sensitivityScale = this.config.scrollSensitivity / DEFAULT_CONFIG.scrollSensitivity;
+                this.interactionEngine.scrollByJoystick(
+                  ev.speed * sensitivityScale,
+                  screenPxX,
+                  screenPxY
+                );
                 break;
 
               case 'SCROLL_END':
                 this.interactionEngine.stopScrolling();
+                break;
+
+              case 'COMMAND':
+                if (ev.command === 'REFRESH') {
+                  this.dispatchCommand('REFRESH', 'Refresh');
+                } else if (ev.command === 'CLOSE_WINDOW') {
+                  this.dispatchCommand('CLOSE_WINDOW', 'Close window');
+                }
                 break;
 
               case 'HOVER_MOVE':
@@ -399,6 +470,9 @@ class AirBrowseContentPipeline {
 
         this.lastVideoTime = this.video.currentTime;
       } catch (inferenceError) {
+        this.diagnostic.error = inferenceError instanceof Error
+          ? inferenceError.message
+          : String(inferenceError);
         console.warn('[AirBrowse] Vision inference error:', inferenceError);
       }
     }
@@ -410,7 +484,8 @@ class AirBrowseContentPipeline {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
     const isHudEnabled = Boolean((window as unknown as { __AIRBROWSE_DEBUG_HUD__?: boolean }).__AIRBROWSE_DEBUG_HUD__);
     let hud = document.getElementById('airbrowse-debug-hud');
-    if (!isHudEnabled) {
+    const debugEnabled = isHudEnabled || localStorage.getItem('airbrowse_debug') === '1';
+    if (!debugEnabled) {
       if (hud) hud.remove();
       return;
     }
@@ -435,7 +510,32 @@ class AirBrowseContentPipeline {
       document.body.appendChild(hud);
     }
     const fps = Math.round(1000 / Math.max(1, latencyMs));
-    hud.textContent = `AirBrowse | State: ${state} | Latency: ${latencyMs.toFixed(1)}ms (${fps}fps)`;
+    hud.textContent = [
+      `AirBrowse | Camera: ${this.diagnostic.camera} | MediaPipe: ${this.diagnostic.mediapipe}`,
+      `Hands: ${this.diagnostic.hands} | Landmarks: ${this.diagnostic.landmarks}`,
+      `Gesture: ${state} | Last: ${this.diagnostic.lastCommand} (${this.diagnostic.commandResult})`,
+      `Inference: ${latencyMs.toFixed(1)}ms (${fps}fps)${this.diagnostic.error ? ` | Error: ${this.diagnostic.error}` : ''}`,
+    ].join('\n');
+  }
+
+  private dispatchCommand(command: 'REFRESH' | 'CLOSE_WINDOW', label: string): void {
+    this.diagnostic.lastCommand = command;
+    this.diagnostic.commandResult = 'PENDING';
+    chrome.runtime.sendMessage({ type: command }, (response?: { success?: boolean; error?: string }) => {
+      if (chrome.runtime.lastError) {
+        const message = chrome.runtime.lastError.message ?? 'Runtime message failed';
+        this.diagnostic.commandResult = `FAILED: ${message}`;
+        this.diagnostic.error = message;
+        return;
+      }
+      if (response?.success) {
+        this.diagnostic.commandResult = 'SUCCESS';
+        this.overlay.showToast(label);
+      } else {
+        this.diagnostic.commandResult = `FAILED: ${response?.error ?? 'No acknowledgement'}`;
+        this.diagnostic.error = response?.error ?? 'No acknowledgement';
+      }
+    });
   }
 
   public teardown(): void {

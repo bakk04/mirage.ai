@@ -75,6 +75,7 @@ export const GESTURE_CONFIG_DEFAULTS = {
   pinchStableFrames: 3,         // 3 stable frames to enter PINCH_PENDING
   pinchMaxDurationMs: 350,      // release in < 350 ms => CLICK
   cursorLookbackMs: 100,        // freeze cursor position 100 ms before pinch began
+  clickCooldownMs: 220,         // minimum interval between completed pinch clicks
 
   // 3. SCROLL: Peace sign (index + middle extended, ring + pinky curled)
   scrollStableFrames: 3,        // 3 stable frames to enter SCROLLING
@@ -83,6 +84,7 @@ export const GESTURE_CONFIG_DEFAULTS = {
   scrollMaxSpeedPxPerFrame: 25, // max scroll speed in pixels per frame
   scrollMaxSpeedPxPerSec: 1500, // max scroll speed in pixels per second (frame-rate independent)
   scrollGain: 2800,             // velocity gain multiplier
+  nominalFrameMs: 1000 / 60,
 
   // On-Screen Toolbar & Dwell
   dwellStandardMs: 1000,        // standard button dwell hover

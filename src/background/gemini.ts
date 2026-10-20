@@ -3,7 +3,7 @@
  * Securely communicates with the Gemini REST API inside the background service worker.
  */
 
-import { DEFAULT_GEMINI_API_KEY, DEFAULT_GEMINI_MODEL } from '../core/config';
+import { DEFAULT_GEMINI_MODEL } from '../core/config';
 
 export interface GeminiPart {
   text: string;
@@ -51,7 +51,7 @@ export async function summarizeText(
   apiKey?: string,
   modelName: string = DEFAULT_GEMINI_MODEL
 ): Promise<string> {
-  const sanitizedKey = (apiKey && apiKey.trim()) || DEFAULT_GEMINI_API_KEY;
+  const sanitizedKey = apiKey?.trim() ?? '';
   if (!sanitizedKey) {
     throw new Error('Gemini API key is required. Please set it in the extension popup.');
   }

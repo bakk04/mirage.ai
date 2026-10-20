@@ -7,7 +7,12 @@
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "windows"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "action": {
     "default_popup": "src/popup/index.html"
@@ -27,8 +32,7 @@
     {
       "resources": [
         "models/*.task",
-        "models/wasm/*",
-        "models/cnn/*"
+        "models/wasm/*"
       ],
       "matches": ["<all_urls>"]
     }

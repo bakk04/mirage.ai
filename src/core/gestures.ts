@@ -37,8 +37,9 @@ export type GestureState = RecognizerState;
 export type GestureEvent =
   | { type: 'HOVER_MOVE'; x: number; y: number }
   | { type: 'CLICK'; x: number; y: number }
-  | { type: 'SCROLL_DELTA'; dy: number; speed: number; direction: 'UP' | 'DOWN' | 'NEUTRAL' }
+  | { type: 'SCROLL_DELTA'; dy: number; speed: number; direction: 'UP' | 'DOWN' | 'NEUTRAL'; frameScale: number }
   | { type: 'SCROLL_END' }
+  | { type: 'COMMAND'; command: 'REFRESH' | 'CLOSE_WINDOW' }
   | { type: 'STATE_CHANGE'; state: RecognizerState };
 
 interface TimestampedCursor {
@@ -51,7 +52,12 @@ export class GestureRecognizer {
   private state: RecognizerState = RecognizerState.IDLE;
 
   // Smoothing filter for palm center (Landmark 9)
-  private readonly palmFilter = new Point2DFilter({
+  private palmFilter = new Point2DFilter({
+    minCutoff: GESTURE_CONFIG.filterMinCutoff,
+    beta: GESTURE_CONFIG.filterBeta,
+    dCutoff: GESTURE_CONFIG.filterDCutoff,
+  });
+  private indexFilter = new Point2DFilter({
     minCutoff: GESTURE_CONFIG.filterMinCutoff,
     beta: GESTURE_CONFIG.filterBeta,
     dCutoff: GESTURE_CONFIG.filterDCutoff,
@@ -73,16 +79,44 @@ export class GestureRecognizer {
 
   // Pinch timing
   private pinchStartTime = 0;
+  private lastClickTimestamp = -Infinity;
+  private lastScrollTimestamp = 0;
 
   // Scroll state
   private neutralY = 0.5;
 
   // Tracking signal quality
   private lastValidTimestamp = 0;
+  private mirrorX = true;
+  private enableRefreshGesture = true;
+  private enableDangerousGestures = false;
+  private lastCommandTimestamp = -Infinity;
+  private commandPose: 'OPEN' | 'THREE' | null = null;
+  private commandStableFrames = 0;
+  private commandTriggeredPose: 'OPEN' | 'THREE' | null = null;
+
+  public setInteractionSettings(
+    smoothing: 'low' | 'med' | 'high',
+    leftHandedMode: boolean,
+    enableRefreshGesture = true,
+    enableDangerousGestures = false
+  ): void {
+    const presets = {
+      low: { minCutoff: 0.08, beta: 5.5, dCutoff: 0.3 },
+      med: { minCutoff: 0.03, beta: 3.5, dCutoff: 0.2 },
+      high: { minCutoff: 0.015, beta: 2.2, dCutoff: 0.12 },
+    } as const;
+    this.palmFilter = new Point2DFilter(presets[smoothing]);
+    this.mirrorX = !leftHandedMode;
+    this.enableRefreshGesture = enableRefreshGesture;
+    this.enableDangerousGestures = enableDangerousGestures;
+    this.reset();
+  }
 
   public reset(): void {
     this.state = RecognizerState.IDLE;
     this.palmFilter.reset();
+    this.indexFilter.reset();
     this.cursorHistory.clear();
     this.currentScreenCursor = { x: 0.5, y: 0.5 };
     this.smoothedPalmCamera = { x: 0.5, y: 0.5 };
@@ -90,8 +124,13 @@ export class GestureRecognizer {
     this.pinchStableFrames = 0;
     this.peaceStableFrames = 0;
     this.pinchStartTime = 0;
+    this.lastClickTimestamp = -Infinity;
+    this.lastScrollTimestamp = 0;
     this.neutralY = 0.5;
     this.lastValidTimestamp = 0;
+    this.commandPose = null;
+    this.commandStableFrames = 0;
+    this.commandTriggeredPose = null;
   }
 
   private resetTrackingState(): void {
@@ -169,9 +208,13 @@ export class GestureRecognizer {
 
     // 2. SMOOTH PALM CENTER (LANDMARK 9) - NEVER THE FINGERTIP
     this.smoothedPalmCamera = this.palmFilter.filter({ x: palm.x, y: palm.y }, timestamp);
+    const smoothedIndexCamera = this.indexFilter.filter(
+      { x: indexTip.x, y: indexTip.y },
+      timestamp
+    );
 
-    // Map central 60% of camera frame to full screen (mirror X)
-    this.currentScreenCursor = mapCameraToScreen(this.smoothedPalmCamera, true);
+    // Use the index fingertip for precise pointing; palm remains the scroll anchor.
+    this.currentScreenCursor = mapCameraToScreen(smoothedIndexCamera, this.mirrorX);
 
     // Store in history buffer for pre-pinch lookback
     this.cursorHistory.push({
@@ -185,10 +228,44 @@ export class GestureRecognizer {
     const pinchRatio = distThumbIndex / scale;
 
     const isPeaceSign = this.classifyPeaceSign(landmarks, wrist);
+    const isThreeFinger = this.classifyThreeFinger(landmarks, wrist);
+    const isOpenHand = this.classifyOpenHand(landmarks, wrist);
+    const commandPose = isOpenHand ? 'OPEN' : isThreeFinger ? 'THREE' : null;
+    if (commandPose === null) {
+      this.commandPose = null;
+      this.commandStableFrames = 0;
+      this.commandTriggeredPose = null;
+    } else if (commandPose === this.commandPose) {
+      this.commandStableFrames++;
+    } else {
+      this.commandPose = commandPose;
+      this.commandStableFrames = 1;
+    }
 
     // =========================================================================
     // STATE MACHINE TRANSITIONS
     // =========================================================================
+
+    // Command poses are checked before the scroll branch. The previous
+    // implementation only checked them while scrolling and required the hand
+    // to remain a peace sign, making three-finger refresh unreachable.
+    if (
+      commandPose !== null &&
+      commandPose === this.commandPose &&
+      this.commandStableFrames >= GESTURE_CONFIG.scrollStableFrames &&
+      this.commandTriggeredPose !== commandPose &&
+      timestamp - this.lastCommandTimestamp >= GESTURE_CONFIG.actionCooldownMs &&
+      ((commandPose === 'THREE' && this.enableRefreshGesture) ||
+        (commandPose === 'OPEN' && this.enableDangerousGestures))
+    ) {
+      this.lastCommandTimestamp = timestamp;
+      this.commandTriggeredPose = commandPose;
+      events.push({
+        type: 'COMMAND',
+        command: commandPose === 'THREE' ? 'REFRESH' : 'CLOSE_WINDOW',
+      });
+      return events;
+    }
 
     // --- CASE A: CURRENTLY SCROLLING ---
     if (this.state === RecognizerState.SCROLLING) {
@@ -214,11 +291,16 @@ export class GestureRecognizer {
           dy: diffY,
           speed: 0,
           direction: 'NEUTRAL',
+          frameScale: 0,
         });
       } else {
         const excess = absDiff - GESTURE_CONFIG.scrollDeadZone;
         const nonLinearSpeed = Math.pow(excess, GESTURE_CONFIG.scrollExponent) * GESTURE_CONFIG.scrollGain;
         const clampedSpeed = Math.min(nonLinearSpeed, GESTURE_CONFIG.scrollMaxSpeedPxPerFrame);
+        const elapsedMs = this.lastScrollTimestamp > 0
+          ? Math.max(1, timestamp - this.lastScrollTimestamp)
+          : GESTURE_CONFIG.nominalFrameMs;
+        const frameScale = Math.min(elapsedMs, 100) / GESTURE_CONFIG.nominalFrameMs;
 
         // In viewport scrolling:
         // Moving page up means scrollBy with negative top (e.g. -speed).
@@ -229,11 +311,13 @@ export class GestureRecognizer {
         events.push({
           type: 'SCROLL_DELTA',
           dy: diffY,
-          speed,
+          speed: speed * frameScale,
           direction,
+          frameScale,
         });
       }
 
+      this.lastScrollTimestamp = timestamp;
       return events;
     }
 
@@ -249,13 +333,17 @@ export class GestureRecognizer {
       // Pinch released (pinchRatio >= GESTURE_CONFIG.pinchExitRatio)
       const duration = timestamp - this.pinchStartTime;
 
-      if (duration < GESTURE_CONFIG.pinchMaxDurationMs) {
+      if (
+        duration < GESTURE_CONFIG.pinchMaxDurationMs &&
+        timestamp - this.lastClickTimestamp >= GESTURE_CONFIG.clickCooldownMs
+      ) {
         // Quick pinch release < 350 ms: emit exactly ONE CLICK at pre-pinch coordinates
         events.push({
           type: 'CLICK',
           x: this.frozenCursor.x,
           y: this.frozenCursor.y,
         });
+        this.lastClickTimestamp = timestamp;
       }
       // If held >= 350 ms: no click emitted
 
@@ -276,6 +364,7 @@ export class GestureRecognizer {
         this.state = RecognizerState.SCROLLING;
         // On entry, store the hand's Y as the neutral point
         this.neutralY = this.smoothedPalmCamera.y;
+        this.lastScrollTimestamp = timestamp;
         events.push({ type: 'STATE_CHANGE', state: this.state });
         return events;
       }
@@ -352,5 +441,29 @@ export class GestureRecognizer {
     );
 
     return indexExtended && middleExtended && ringCurled && pinkyCurled;
+  }
+
+  private classifyThreeFinger(
+    landmarks: Array<Point2D | Point3D>,
+    wrist: Point2D | Point3D
+  ): boolean {
+    return (
+      isFingerExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist) &&
+      isFingerExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist) &&
+      isFingerExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist) &&
+      isFingerCurled(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist)
+    );
+  }
+
+  private classifyOpenHand(
+    landmarks: Array<Point2D | Point3D>,
+    wrist: Point2D | Point3D
+  ): boolean {
+    return (
+      isFingerExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist) &&
+      isFingerExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist) &&
+      isFingerExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist) &&
+      isFingerExtended(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist)
+    );
   }
 }

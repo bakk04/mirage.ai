@@ -31,6 +31,7 @@ export class KeyboardUI {
   private layout: KeyboardLayout = 'AZERTY';
   private layer: KeyboardLayer = 'ALPHA';
   private isShift = false;
+  private composedText = '';
 
   // Dwell state
   private currentlyHoveredKey: HTMLElement | null = null;
@@ -88,6 +89,18 @@ export class KeyboardUI {
         padding-bottom: 6px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.12);
         margin-bottom: 4px;
+      }
+      .keyboard-output {
+        width: 100%;
+        min-height: 34px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, 0.25);
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 13px;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
       .keyboard-title {
         font-size: 12px;
@@ -330,12 +343,19 @@ export class KeyboardUI {
     if (action === 'CHAR' && value) {
       const charToType = this.isShift ? value.toUpperCase() : value.toLowerCase();
       typeCharacter(charToType);
+      this.composedText += charToType;
+      this.isShift = false;
+      this.render();
     } else if (action === 'BACKSPACE') {
       backspaceCharacter();
+      this.composedText = this.composedText.slice(0, -1);
+      this.render();
     } else if (action === 'ENTER') {
       insertNewline();
     } else if (action === 'SPACE') {
       typeCharacter(' ');
+      this.composedText += ' ';
+      this.render();
     } else if (action === 'SHIFT') {
       this.isShift = !this.isShift;
       this.render();
@@ -347,6 +367,9 @@ export class KeyboardUI {
       this.render();
     } else if (action === 'CLOSE') {
       this.close();
+    } else if (action === 'CLEAR') {
+      this.composedText = '';
+      this.render();
     }
   }
 
@@ -366,6 +389,11 @@ export class KeyboardUI {
       <div style="font-size: 11px; color: rgba(255,255,255,0.6);">Hover 1s or Quick Pinch to Type</div>
     `;
     this.containerEl.appendChild(header);
+    const output = document.createElement('div');
+    output.className = 'keyboard-output';
+    output.textContent = this.composedText || 'Point and pinch to type…';
+    output.setAttribute('aria-live', 'polite');
+    this.containerEl.appendChild(output);
 
     // Layout rows
     let row1: string[];
@@ -448,6 +476,8 @@ export class KeyboardUI {
 
     const closeKey = this.createKey('CLOSE', 'CLOSE', '✕', 'key-close');
     r4El.appendChild(closeKey);
+    const clearKey = this.createKey('CLEAR', 'CLEAR', 'Clear', 'key-wide');
+    r4El.appendChild(clearKey);
 
     this.containerEl.appendChild(r4El);
   }

@@ -5,6 +5,7 @@
 
 export type CursorSmoothing = 'low' | 'med' | 'high';
 export type OpenMode = 'tab' | 'window';
+export type ClickMode = 'single' | 'double';
 
 export interface AirBrowseConfig {
   isEnabled: boolean;
@@ -12,19 +13,26 @@ export interface AirBrowseConfig {
   cursorSmoothing: CursorSmoothing;
   leftHandedMode: boolean;
   openMode: OpenMode;
+  clickMode: ClickMode;
+  enableRefreshGesture: boolean;
+  enableDangerousGestures: boolean;
 }
 
 export const DEFAULT_CONFIG: AirBrowseConfig = {
-  isEnabled: true,
+  // Control must be explicitly started from the popup so normal browsing is
+  // never interrupted by camera access or injected controls.
+  isEnabled: false,
   scrollSensitivity: 2.5,
   cursorSmoothing: 'med',
   leftHandedMode: false,
   openMode: 'tab',
+  clickMode: 'single',
+  enableRefreshGesture: true,
+  enableDangerousGestures: false,
 };
 
-export const DEFAULT_GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-
 export const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
+export const GEMINI_API_KEY_STORAGE_KEY = 'airbrowse_gemini_api_key';
 
 export const CONFIG_STORAGE_KEY = 'airbrowse_config';
 
@@ -76,4 +84,22 @@ export async function saveConfig(updates: Partial<AirBrowseConfig>): Promise<Air
   }
 
   return nextConfig;
+}
+
+export async function loadGeminiApiKey(): Promise<string> {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const data = await chrome.storage.local.get(GEMINI_API_KEY_STORAGE_KEY);
+      const key = data?.[GEMINI_API_KEY_STORAGE_KEY];
+      return typeof key === 'string' ? key : '';
+    }
+  } catch (error) {
+    console.warn('[AirBrowse] Failed to load Gemini API key:', error);
+  }
+  return '';
+}
+
+export async function saveGeminiApiKey(apiKey: string): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  await chrome.storage.local.set({ [GEMINI_API_KEY_STORAGE_KEY]: apiKey.trim() });
 }

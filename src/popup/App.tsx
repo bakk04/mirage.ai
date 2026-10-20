@@ -1,515 +1,256 @@
-/**
- * AirBrowse - Extension Popup Guide & Practice Arena
- * Strict 3-gesture design:
- * 1. Move: raise your hand
- * 2. Click: quick pinch
- * 3. Scroll: show 2 fingers, move hand up/down
- * Bottom banner: "Everything else: hover a button for 1 second"
- *
- * Practice tab with live detected state and interactive cursor simulation (zero real actions).
- * Automatic prefers-color-scheme (dark/light) & Arabic / French / English multilingual support.
- */
+import React, { useEffect, useState } from 'react';
+import {
+  Activity,
+  ArrowUp,
+  Brain,
+  Check,
+  ChevronRight,
+  Hand,
+  Keyboard,
+  MousePointer2,
+  Pause,
+  Play,
+  RefreshCw,
+  Settings2,
+  Sparkles,
+  Undo2,
+  X,
+} from 'lucide-react';
+import {
+  AirBrowseConfig,
+  DEFAULT_CONFIG,
+  MESSAGE_TYPES,
+  loadConfig,
+  loadGeminiApiKey,
+  saveConfig,
+  saveGeminiApiKey,
+} from '../core/config';
 
-import React, { useState, useEffect } from 'react';
-import { Power, Compass, Sparkles } from 'lucide-react';
-import { loadConfig, saveConfig, AirBrowseConfig, DEFAULT_CONFIG, MESSAGE_TYPES } from '../core/config';
-import { RecognizerState } from '../core/gestures';
+type View = 'control' | 'guide' | 'settings';
 
-type Language = 'en' | 'fr' | 'ar';
-type PopupTab = 'guide' | 'practice';
+interface RuntimeResponse {
+  success?: boolean;
+  active?: boolean;
+  error?: string;
+}
 
-/* =========================================================================
-   TRANSLATION DICTIONARY
-   ========================================================================= */
-const I18N = {
-  en: {
-    title: 'AirBrowse',
-    subtitle: 'Touchless Browser Control',
-    guideTab: 'Guide',
-    practiceTab: 'Practice',
-    active: 'Active',
-    paused: 'Paused',
-    moveTitle: 'Move: raise your hand',
-    moveDesc: 'Open, relaxed hand. Cursor tracks your palm center (Landmark 9).',
-    clickTitle: 'Click: quick pinch',
-    clickDesc: 'Thumb + Index quick pinch. Tap and release in under 350 ms.',
-    scrollTitle: 'Scroll: show 2 fingers, move hand up/down',
-    scrollDesc: 'Peace sign. Hand above neutral = scroll up, below = scroll down.',
-    everythingElse: 'Everything else: hover a button for 1 second',
-    practiceTitle: 'Interactive Practice Stage',
-    practiceSubtitle: 'Test spatial gestures safely without triggering real browser actions.',
-    detectedState: 'Detected State',
-    cursorPreview: 'Cursor & Pose Simulator',
-    simMove: 'Simulate Open Hand',
-    simPinch: 'Simulate Quick Pinch',
-    simScrollUp: 'Simulate Peace (Hand Up)',
-    simScrollDown: 'Simulate Peace (Hand Down)',
-    simIdle: 'Simulate Lost Tracking',
-    practiceSuccess: 'Click registered! (Zero real DOM events)',
-    practiceScrolling: 'Joystick scrolling active',
-    neutralYInfo: 'Neutral anchor point locked.',
-  },
-  fr: {
-    title: 'AirBrowse',
-    subtitle: 'Navigation sans contact',
-    guideTab: 'Guide',
-    practiceTab: 'Pratique',
-    active: 'Actif',
-    paused: 'En pause',
-    moveTitle: 'Déplacer : levez la main',
-    moveDesc: 'Main ouverte et détendue. Le curseur suit le centre de votre paume.',
-    clickTitle: 'Cliquer : pincement rapide',
-    clickDesc: 'Pincement rapide Pouce + Index. Pincez et relâchez en moins de 350 ms.',
-    scrollTitle: 'Défiler : montrez 2 doigts, bougez la main haut/bas',
-    scrollDesc: 'Signe de paix. Main au-dessus = défile vers le haut, en-dessous = vers le bas.',
-    everythingElse: 'Tout le reste : survolez un bouton pendant 1 seconde',
-    practiceTitle: 'Zone d’entraînement',
-    practiceSubtitle: 'Testez les gestes en toute sécurité sans déclencher d’actions réelles.',
-    detectedState: 'État détecté',
-    cursorPreview: 'Simulateur de curseur & pose',
-    simMove: 'Main ouverte',
-    simPinch: 'Pincement rapide',
-    simScrollUp: 'Signe de paix (Vers le haut)',
-    simScrollDown: 'Signe de paix (Vers le bas)',
-    simIdle: 'Perte de suivi',
-    practiceSuccess: 'Clic enregistré ! (Aucun événement DOM réel)',
-    practiceScrolling: 'Défilement joystick actif',
-    neutralYInfo: 'Point d’ancrage neutre fixé.',
-  },
-  ar: {
-    title: 'إير براوز',
-    subtitle: 'تحكم في المتصفح بحركات اليد',
-    guideTab: 'الدليل',
-    practiceTab: 'التدريب',
-    active: 'نشط',
-    paused: 'متوقف',
-    moveTitle: 'التحريك: ارفع يدك',
-    moveDesc: 'يد مفتوحة ومسترخية. المؤشر يتتبع مركز راحة يدك.',
-    clickTitle: 'النقر: قرصة سريعة',
-    clickDesc: 'قرصة سريعة بالإبهام والسبابة. انقر وافلت خلال أقل من 350 مللي ثانية.',
-    scrollTitle: 'التمرير: أظهر إصبعين، حرّك يدك لأعلى/لأسفل',
-    scrollDesc: 'علامة النصر. اليد لأعلى = تمرير لأعلى، اليد لأسفل = تمرير لأسفل.',
-    everythingElse: 'كل شيء آخر: قف فوق أي زر لمدة ثانية واحدة',
-    practiceTitle: 'ميدان التدريب التفاعلي',
-    practiceSubtitle: 'اختبر حركات اليد بأمان دون التأثير على صفحات الويب الحقيقية.',
-    detectedState: 'الحالة المكتشفة',
-    cursorPreview: 'محاكي المؤشر وحركات اليد',
-    simMove: 'يد مفتوحة',
-    simPinch: 'قرصة سريعة',
-    simScrollUp: 'علامة النصر (أعلى)',
-    simScrollDown: 'علامة النصر (أسفل)',
-    simIdle: 'فقدان التتبع',
-    practiceSuccess: 'تم تسجيل النقرة! (دون إطلاق أحداث حقيقية)',
-    practiceScrolling: 'التمرير التناسبي قيد التشغيل',
-    neutralYInfo: 'تم تثبيت نقطة الارتكاز المحايدة.',
-  },
-} as const;
+type Compatibility =
+  | { kind: 'ordinary'; message: string }
+  | { kind: 'restricted'; message: string }
+  | { kind: 'unknown'; message: string };
 
-/* =========================================================================
-   SVG HAND ILLUSTRATIONS
-   ========================================================================= */
+function getCompatibility(url?: string): Compatibility {
+  if (!url) return { kind: 'unknown', message: 'The active tab URL is unavailable.' };
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return { kind: 'ordinary', message: 'Air Control is ready for this website.' };
+    }
+    return { kind: 'restricted', message: 'Chrome restricts extensions on this browser page.' };
+  } catch {
+    return { kind: 'unknown', message: 'The active tab cannot be identified.' };
+  }
+}
 
-// 1. Move: Open / Relaxed Hand with glowing Palm Center (Landmark 9)
-const HandSvgMove: React.FC<{ className?: string }> = ({ className = 'w-16 h-16' }) => (
-  <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <circle cx="32" cy="32" r="30" className="fill-blue-500/10 stroke-blue-500/30" strokeWidth="1.5" />
-    {/* Relaxed open hand outline */}
-    <path
-      d="M20 28V38C20 44 25 49 32 49C39 49 44 44 44 38V28M24 20V34M29 16V34M35 17V34M40 22V34M17 33C17 33 19 39 25 44"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="text-blue-500"
-    />
-    {/* Landmark 9 (Palm Center) highlight */}
-    <circle cx="32" cy="36" r="4.5" className="fill-blue-500 shadow-lg" />
-    <circle cx="32" cy="36" r="7" className="stroke-blue-400 stroke-dasharray animate-pulse" strokeWidth="1.5" />
-    <circle cx="32" cy="36" r="2" className="fill-white" />
-  </svg>
-);
-
-// 2. Click: Quick Pinch (Thumb 4 + Index 8 meeting)
-const HandSvgClick: React.FC<{ className?: string }> = ({ className = 'w-16 h-16' }) => (
-  <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <circle cx="32" cy="32" r="30" className="fill-cyan-500/10 stroke-cyan-500/30" strokeWidth="1.5" />
-    {/* Pinch loop thumb + index */}
-    <path
-      d="M26 23C26 20 29 18 32 18C35 18 38 20 38 23V34M24 30C21 27 18 28 18 32C18 38 24 46 32 46C40 46 45 40 45 34M38 30V34"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="text-cyan-500"
-    />
-    {/* Pinch contact burst */}
-    <circle cx="32" cy="18" r="5" className="fill-cyan-400/30 animate-ping" />
-    <circle cx="32" cy="18" r="3.5" className="fill-cyan-400" />
-    <circle cx="32" cy="18" r="1.5" className="fill-white" />
-  </svg>
-);
-
-// 3. Scroll: Peace sign (Index + Middle extended, ring + pinky curled)
-const HandSvgScroll: React.FC<{ className?: string }> = ({ className = 'w-16 h-16' }) => (
-  <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-    <circle cx="32" cy="32" r="30" className="fill-indigo-500/10 stroke-indigo-500/30" strokeWidth="1.5" />
-    {/* Peace sign fingers */}
-    <path
-      d="M27 15V34M37 16V34M22 34C22 34 23 37 25 40C27 44 32 47 37 47C42 47 45 43 45 37V34"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="text-indigo-500"
-    />
-    {/* Vertical motion arrows for joystick scrolling */}
-    <path d="M14 26L14 16M14 16L10 20M14 16L18 20" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="text-indigo-400" />
-    <path d="M14 38L14 48M14 48L10 44M14 48L18 44" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="text-indigo-400" />
-  </svg>
-);
+const gestureGuide = [
+  { icon: MousePointer2, title: 'Move', instruction: 'Point with your index finger.', action: 'Move the pointer' },
+  { icon: Hand, title: 'Click', instruction: 'Pinch thumb and index, then release.', action: 'Activate the target' },
+  { icon: ArrowUp, title: 'Scroll', instruction: 'Raise two fingers and move vertically.', action: 'Scroll the page' },
+  { icon: RefreshCw, title: 'Refresh', instruction: 'Hold three fingers steadily.', action: 'Refresh the page' },
+  { icon: Keyboard, title: 'Type', instruction: 'Open the keyboard, point, then pinch.', action: 'Enter text in a focused field' },
+];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<PopupTab>('guide');
-  const [lang, setLang] = useState<Language>('en');
+  const [view, setView] = useState<View>('control');
   const [config, setConfig] = useState<AirBrowseConfig>(DEFAULT_CONFIG);
-
-  // Practice Stage State
-  const [practiceState, setPracticeState] = useState<RecognizerState>(RecognizerState.MOVE);
-  const [cursorPos, setCursorPos] = useState({ x: 0.5, y: 0.5 });
-  const [practiceToast, setPracticeToast] = useState<string | null>(null);
-  const [scrollSpeed, setScrollSpeed] = useState(0);
-
-  const t = I18N[lang];
-  const isRTL = lang === 'ar';
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [compatibility, setCompatibility] = useState<Compatibility>({
+    kind: 'unknown',
+    message: 'Checking the active page…',
+  });
+  const [geminiKey, setGeminiKey] = useState('');
+  const [summary, setSummary] = useState('');
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
 
   useEffect(() => {
-    loadConfig().then((loaded) => setConfig(loaded));
+    Promise.all([loadConfig(), loadGeminiApiKey()]).then(([loaded, key]) => {
+      setConfig(loaded);
+      setGeminiKey(key);
+    });
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      setCompatibility(getCompatibility(tab?.url));
+    }).catch(() => {
+      setCompatibility({ kind: 'unknown', message: 'The active tab cannot be identified.' });
+    });
   }, []);
 
-  const handleToggleMaster = async () => {
-    const nextState = !config.isEnabled;
-    const nextConfig = { ...config, isEnabled: nextState };
-    setConfig(nextConfig);
-    await saveConfig({ isEnabled: nextState });
-
+  const sendConfig = async (nextConfig: AirBrowseConfig): Promise<RuntimeResponse> => {
+    const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+    const tabId = tab?.id;
+    if (tabId === undefined) {
+      return { success: false, error: 'No active tab is available.' };
+    }
+    const compatibility = getCompatibility(tab.url);
+    if (compatibility.kind === 'restricted') return { success: false, error: compatibility.message };
+    if (compatibility.kind === 'unknown') return { success: false, error: compatibility.message };
     try {
-      if (typeof chrome !== 'undefined' && chrome.tabs) {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]?.id) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-              type: MESSAGE_TYPES.CONFIG_UPDATED,
-              payload: nextConfig,
-            }).catch(() => {});
-          }
-        });
-      }
-    } catch {}
+      return (await chrome.tabs.sendMessage(tabId, {
+        type: MESSAGE_TYPES.CONFIG_UPDATED,
+        payload: nextConfig,
+      })) as RuntimeResponse;
+    } catch {
+      return {
+        success: false,
+        error: 'Air Control could not connect to this page. Reload the tab and try again.',
+      };
+    }
   };
 
-  const showSimToast = (msg: string) => {
-    setPracticeToast(msg);
-    setTimeout(() => setPracticeToast(null), 2000);
+  const toggleControl = async () => {
+    setIsStarting(true);
+    setRuntimeError(null);
+    const nextConfig = { ...config, isEnabled: !config.isEnabled };
+    await saveConfig({ isEnabled: nextConfig.isEnabled });
+    const response = await sendConfig(nextConfig);
+    if (!response.success && nextConfig.isEnabled) {
+      setRuntimeError(response.error ?? 'Unable to start camera control.');
+      setConfig({ ...nextConfig, isEnabled: false });
+      await saveConfig({ isEnabled: false });
+    } else {
+      setConfig(nextConfig);
+    }
+    setIsStarting(false);
   };
+
+  const updateSetting = async (updates: Partial<AirBrowseConfig>) => {
+    const nextConfig = await saveConfig(updates);
+    setConfig(nextConfig);
+    if (nextConfig.isEnabled) {
+      const response = await sendConfig(nextConfig);
+      if (!response.success) setRuntimeError(response.error ?? 'Unable to update control settings.');
+    }
+  };
+
+  const toggleKeyboard = async () => {
+    const tabId = (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+    if (tabId === undefined) {
+      setRuntimeError('No active tab is available.');
+      return;
+    }
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_KEYBOARD' });
+    } catch {
+      setRuntimeError('Start Air Control before opening the keyboard.');
+    }
+  };
+
+  const summarizePage = async () => {
+    setIsSummarizing(true);
+    setSummary('');
+    setSummaryError(null);
+    try {
+      if (!geminiKey.trim()) throw new Error('Enter a Gemini API key first.');
+      await saveGeminiApiKey(geminiKey);
+      const response = (await chrome.runtime.sendMessage({
+        type: 'SUMMARIZE_PAGE',
+        apiKey: geminiKey,
+      })) as { success?: boolean; summary?: string; error?: string };
+      if (!response.success || !response.summary) throw new Error(response.error ?? 'No summary was returned.');
+      setSummary(response.summary);
+    } catch (error) {
+      setSummaryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  const statusLabel = config.isEnabled ? 'Air control active' : 'Ready when you are';
 
   return (
-    <div
-      dir={isRTL ? 'rtl' : 'ltr'}
-      className="w-[420px] min-h-[610px] max-h-[640px] flex flex-col bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans select-none antialiased"
-    >
-      {/* HEADER */}
-      <header className="h-14 px-4 flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-md shrink-0">
-        <div className="flex items-center space-x-2.5 rtl:space-x-reverse">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-sm shadow-blue-500/25">
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-1.5 rtl:space-x-reverse">
-              <span className="text-sm font-bold tracking-tight">{t.title}</span>
-              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                3 GESTURES
-              </span>
-            </div>
-            <p className="text-[10px] text-neutral-500 dark:text-neutral-400">{t.subtitle}</p>
-          </div>
+    <div className="air-app">
+      <header className="air-header">
+        <div className="brand">
+          <div className={`brand-mark ${config.isEnabled ? 'is-active' : ''}`}><Sparkles size={16} /></div>
+          <div><strong>AirBrowse</strong><span>Natural browser control</span></div>
         </div>
-
-        {/* Controls: Language Selector & Master Power */}
-        <div className="flex items-center space-x-2 rtl:space-x-reverse">
-          {/* Language Switcher */}
-          <div className="flex items-center bg-neutral-200/60 dark:bg-neutral-800 rounded-lg p-0.5 text-[11px] font-semibold">
-            {(['en', 'fr', 'ar'] as Language[]).map((l) => (
-              <button
-                key={l}
-                type="button"
-                onClick={() => setLang(l)}
-                className={`px-1.5 py-0.5 rounded-md transition-all cursor-pointer ${
-                  lang === l
-                    ? 'bg-white dark:bg-neutral-700 text-blue-600 dark:text-blue-400 shadow-xs'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                }`}
-              >
-                {l.toUpperCase()}
-              </button>
-            ))}
-          </div>
-
-          {/* Master Toggle Pill */}
-          <button
-            type="button"
-            onClick={handleToggleMaster}
-            className={`flex items-center space-x-1.5 rtl:space-x-reverse px-2.5 py-1 rounded-full text-xs font-semibold cursor-pointer border transition-colors ${
-              config.isEnabled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
-                : 'bg-neutral-200/50 dark:bg-neutral-800 border-neutral-300 dark:border-neutral-700 text-neutral-500'
-            }`}
-          >
-            <Power className="w-3.5 h-3.5" />
-            <span>{config.isEnabled ? t.active : t.paused}</span>
-          </button>
-        </div>
+        <button className={`power-button ${config.isEnabled ? 'is-active' : ''}`} onClick={toggleControl} disabled={isStarting} aria-label={config.isEnabled ? 'Stop air control' : 'Start air control'}>
+          {config.isEnabled ? <Pause size={15} /> : <Play size={15} />}
+        </button>
       </header>
 
-      {/* TAB NAVIGATION */}
-      <nav className="flex border-b border-neutral-200 dark:border-neutral-800 bg-neutral-100/60 dark:bg-neutral-900/40 p-1">
-        <button
-          type="button"
-          onClick={() => setActiveTab('guide')}
-          className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center justify-center space-x-1.5 rtl:space-x-reverse ${
-            activeTab === 'guide'
-              ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
-              : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200'
-          }`}
-        >
-          <Compass className="w-3.5 h-3.5" />
-          <span>{t.guideTab}</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('practice')}
-          className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center justify-center space-x-1.5 rtl:space-x-reverse ${
-            activeTab === 'practice'
-              ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
-              : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>{t.practiceTab}</span>
-        </button>
+      <nav className="air-nav" aria-label="AirBrowse sections">
+        {(['control', 'guide', 'settings'] as View[]).map((item) => (
+          <button key={item} className={view === item ? 'selected' : ''} onClick={() => setView(item)}>
+            {item === 'control' ? 'Control' : item === 'guide' ? 'Guide' : 'Settings'}
+          </button>
+        ))}
       </nav>
 
-      {/* BODY CONTENT */}
-      <main className="flex-1 overflow-y-auto p-4 space-y-3.5">
-        {activeTab === 'guide' ? (
+      <main className="air-main">
+        {view === 'control' && (
           <>
-            {/* THE 3 GESTURE CARDS */}
-            <div className="space-y-3">
-              {/* Card 1: MOVE */}
-              <div className="p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200/90 dark:border-neutral-800 shadow-sm flex items-center space-x-4 rtl:space-x-reverse hover:border-blue-500/40 transition-colors">
-                <div className="shrink-0">
-                  <HandSvgMove />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center space-x-1.5 rtl:space-x-reverse">
-                    <span className="w-2 h-2 rounded-full bg-blue-500" />
-                    <h3 className="text-sm font-bold text-neutral-900 dark:text-white">
-                      {t.moveTitle}
-                    </h3>
-                  </div>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 leading-relaxed">
-                    {t.moveDesc}
-                  </p>
-                </div>
-              </div>
+            <section className={`control-hero ${config.isEnabled ? 'running' : ''}`}>
+              <div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" />
+              <div className="hero-icon"><Activity size={25} /></div>
+              <p className="eyebrow">{config.isEnabled ? 'LIVE SESSION' : 'AIR MOUSE'}</p>
+              <h1>{statusLabel}</h1>
+              <p className="hero-copy">{config.isEnabled ? 'Point with your index finger. Pinch to select.' : 'Move, click, and scroll without touching the page.'}</p>
+              <button className="start-button" onClick={toggleControl} disabled={isStarting}>
+                {isStarting ? 'Starting camera…' : config.isEnabled ? 'Stop air control' : 'Start air control'}
+                <ChevronRight size={17} />
+              </button>
+            </section>
 
-              {/* Card 2: CLICK */}
-              <div className="p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200/90 dark:border-neutral-800 shadow-sm flex items-center space-x-4 rtl:space-x-reverse hover:border-cyan-500/40 transition-colors">
-                <div className="shrink-0">
-                  <HandSvgClick />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center space-x-1.5 rtl:space-x-reverse">
-                    <span className="w-2 h-2 rounded-full bg-cyan-500" />
-                    <h3 className="text-sm font-bold text-neutral-900 dark:text-white">
-                      {t.clickTitle}
-                    </h3>
-                  </div>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 leading-relaxed">
-                    {t.clickDesc}
-                  </p>
-                </div>
-              </div>
+            <section className="status-row" aria-live="polite">
+              <StatusDot active={config.isEnabled} label={config.isEnabled ? 'Camera and MediaPipe active' : 'Camera off'} />
+              <StatusDot active={compatibility.kind === 'ordinary'} label={compatibility.message} muted={compatibility.kind !== 'ordinary'} />
+            </section>
 
-              {/* Card 3: SCROLL */}
-              <div className="p-4 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200/90 dark:border-neutral-800 shadow-sm flex items-center space-x-4 rtl:space-x-reverse hover:border-indigo-500/40 transition-colors">
-                <div className="shrink-0">
-                  <HandSvgScroll />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center space-x-1.5 rtl:space-x-reverse">
-                    <span className="w-2 h-2 rounded-full bg-indigo-500" />
-                    <h3 className="text-sm font-bold text-neutral-900 dark:text-white">
-                      {t.scrollTitle}
-                    </h3>
-                  </div>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 leading-relaxed">
-                    {t.scrollDesc}
-                  </p>
-                </div>
-              </div>
-            </div>
+            {runtimeError && <div className="error-banner" role="alert"><X size={15} />{runtimeError}</div>}
 
-            {/* CALLOUT: EVERYTHING ELSE HOVER A BUTTON FOR 1 SECOND */}
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md flex items-center space-x-3 rtl:space-x-reverse">
-              <div className="w-9 h-9 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center shrink-0">
-                <Sparkles className="w-5 h-5 text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <span className="text-[10px] uppercase font-bold tracking-wider text-blue-200 block">
-                  On-Screen Toolbar
-                </span>
-                <p className="text-xs font-semibold leading-snug mt-0.5">
-                  {t.everythingElse}
-                </p>
-              </div>
+            <div className="quick-actions">
+              <button onClick={toggleKeyboard} disabled={!config.isEnabled}><Keyboard size={18} /><span>Open keyboard<small>Point and pinch to type</small></span><ChevronRight size={15} /></button>
+              <button onClick={() => setView('guide')}><Hand size={18} /><span>Learn gestures<small>Five simple controls</small></span><ChevronRight size={15} /></button>
             </div>
           </>
-        ) : (
-          /* PRACTICE TAB */
-          <div className="space-y-3.5">
-            <div>
-              <h2 className="text-sm font-bold text-neutral-900 dark:text-white">
-                {t.practiceTitle}
-              </h2>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-                {t.practiceSubtitle}
-              </p>
+        )}
+
+        {view === 'guide' && (
+          <section className="guide-view">
+            <div className="section-heading"><div><p className="eyebrow">GET STARTED</p><h2>Move like a mouse.</h2></div><Hand size={23} /></div>
+            <p className="section-copy">Keep your hand relaxed and use your index fingertip as the pointer. Every action needs a clear, deliberate movement.</p>
+            <div className="gesture-list">
+              {gestureGuide.map(({ icon: Icon, title, instruction, action }) => <div className="gesture-item" key={title}><div className="gesture-icon"><Icon size={18} /></div><div><strong>{title}</strong><p>{title === 'Click' && config.clickMode === 'double' ? 'Pinch and release twice as one deliberate action.' : instruction}</p><small>{action}</small></div><Check size={15} /></div>)}
             </div>
+            <button className="text-button" onClick={() => setView('settings')}>Configure gestures <ChevronRight size={15} /></button>
+          </section>
+        )}
 
-            {/* Live Detected State Badge */}
-            <div className="p-3.5 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 flex items-center justify-between shadow-xs">
-              <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
-                {t.detectedState}:
-              </span>
-              <div className="flex items-center space-x-2 rtl:space-x-reverse">
-                <span
-                  className={`w-2.5 h-2.5 rounded-full animate-pulse ${
-                    practiceState === RecognizerState.MOVE
-                      ? 'bg-white shadow-[0_0_8px_#ffffff]'
-                      : practiceState === RecognizerState.PINCH_PENDING
-                      ? 'bg-cyan-400 shadow-[0_0_8px_#22d3ee]'
-                      : practiceState === RecognizerState.SCROLLING
-                      ? 'bg-blue-500 shadow-[0_0_8px_#3b82f6]'
-                      : 'bg-neutral-400'
-                  }`}
-                />
-                <span className="text-xs font-mono font-bold tracking-wide">
-                  {practiceState}
-                </span>
-              </div>
-            </div>
-
-            {/* Interactive Cursor Stage Canvas */}
-            <div
-              onMouseMove={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                setCursorPos({
-                  x: (e.clientX - rect.left) / rect.width,
-                  y: (e.clientY - rect.top) / rect.height,
-                });
-              }}
-              className="relative w-full h-44 rounded-2xl bg-neutral-950 border border-neutral-800 overflow-hidden flex items-center justify-center cursor-none"
-            >
-              {/* Virtual Cursor element */}
-              <div
-                style={{
-                  transform: `translate3d(${cursorPos.x * 370}px, ${cursorPos.y * 160}px, 0)`,
-                }}
-                className="absolute top-0 left-0 w-8 h-8 -ml-4 -mt-4 flex items-center justify-center pointer-events-none transition-transform duration-75"
-              >
-                <div
-                  className={`rounded-full transition-all duration-150 ${
-                    practiceState === RecognizerState.MOVE
-                      ? 'w-3.5 h-3.5 bg-white shadow-[0_0_12px_#ffffff]'
-                      : practiceState === RecognizerState.PINCH_PENDING
-                      ? 'w-2 h-2 bg-cyan-300 shadow-[0_0_14px_#22d3ee]'
-                      : practiceState === RecognizerState.SCROLLING
-                      ? 'w-4 h-4 bg-blue-500 shadow-[0_0_18px_#3b82f6]'
-                      : 'w-3 h-3 bg-neutral-500 opacity-40'
-                  }`}
-                />
-              </div>
-
-              {/* Status overlays inside stage */}
-              <div className="absolute top-2 left-2 text-[10px] font-mono text-neutral-400">
-                X: {cursorPos.x.toFixed(2)} | Y: {cursorPos.y.toFixed(2)}
-              </div>
-
-              {scrollSpeed !== 0 && (
-                <div className="absolute bottom-2 text-xs font-bold text-blue-400 animate-bounce">
-                  {scrollSpeed < 0 ? '▲ Page Scrolling Up' : '▼ Page Scrolling Down'}
-                </div>
-              )}
-
-              {practiceToast && (
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 px-3 py-1.5 rounded-full bg-cyan-500 text-neutral-950 font-bold text-xs shadow-lg animate-fade-in">
-                  {practiceToast}
-                </div>
-              )}
-            </div>
-
-            {/* Gesture Simulator Action Buttons */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setPracticeState(RecognizerState.MOVE);
-                  setScrollSpeed(0);
-                }}
-                className="p-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-xs font-semibold hover:border-blue-500 transition-colors cursor-pointer text-left rtl:text-right"
-              >
-                1. {t.simMove}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setPracticeState(RecognizerState.PINCH_PENDING);
-                  setTimeout(() => {
-                    setPracticeState(RecognizerState.MOVE);
-                    showSimToast(t.practiceSuccess);
-                  }, 200);
-                }}
-                className="p-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-xs font-semibold hover:border-cyan-500 transition-colors cursor-pointer text-left rtl:text-right"
-              >
-                2. {t.simPinch}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setPracticeState(RecognizerState.SCROLLING);
-                  setScrollSpeed(-25);
-                }}
-                className="p-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-xs font-semibold hover:border-indigo-500 transition-colors cursor-pointer text-left rtl:text-right"
-              >
-                3. {t.simScrollUp}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setPracticeState(RecognizerState.SCROLLING);
-                  setScrollSpeed(25);
-                }}
-                className="p-2.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 text-xs font-semibold hover:border-indigo-500 transition-colors cursor-pointer text-left rtl:text-right"
-              >
-                4. {t.simScrollDown}
-              </button>
-            </div>
-          </div>
+        {view === 'settings' && (
+          <section className="settings-view">
+            <div className="section-heading"><div><p className="eyebrow">PREFERENCES</p><h2>Make it yours.</h2></div><Settings2 size={23} /></div>
+            <SettingRow label="Scroll sensitivity" value={config.scrollSensitivity.toFixed(1)}><input aria-label="Scroll sensitivity" type="range" min="0.5" max="5" step="0.1" value={config.scrollSensitivity} onChange={(e) => updateSetting({ scrollSensitivity: Number(e.target.value) })} /></SettingRow>
+            <SettingRow label="Cursor smoothing"><select aria-label="Cursor smoothing" value={config.cursorSmoothing} onChange={(e) => updateSetting({ cursorSmoothing: e.target.value as AirBrowseConfig['cursorSmoothing'] })}><option value="low">Responsive</option><option value="med">Balanced</option><option value="high">Steady</option></select></SettingRow>
+            <SettingRow label="Click mode"><select aria-label="Click mode" value={config.clickMode} onChange={(e) => updateSetting({ clickMode: e.target.value as AirBrowseConfig['clickMode'] })}><option value="single">Single click</option><option value="double">Double click</option></select></SettingRow>
+            <SettingRow label="Left-handed mode"><input aria-label="Left-handed mode" type="checkbox" checked={config.leftHandedMode} onChange={(e) => updateSetting({ leftHandedMode: e.target.checked })} /></SettingRow>
+            <SettingRow label="Three-finger refresh"><input aria-label="Three-finger refresh" type="checkbox" checked={config.enableRefreshGesture} onChange={(e) => updateSetting({ enableRefreshGesture: e.target.checked })} /></SettingRow>
+            <SettingRow label="Open-hand window close"><input aria-label="Open-hand window close" type="checkbox" checked={config.enableDangerousGestures} onChange={(e) => updateSetting({ enableDangerousGestures: e.target.checked })} /></SettingRow>
+            <SettingRow label="New tab action"><select aria-label="New tab action" value={config.openMode} onChange={(e) => updateSetting({ openMode: e.target.value as AirBrowseConfig['openMode'] })}><option value="tab">New tab</option><option value="window">New window</option></select></SettingRow>
+            <div className="gemini-panel"><div className="panel-title"><Brain size={17} /><strong>Page summary</strong></div><p>Use Gemini to summarize the active page.</p><input aria-label="Gemini API key" type="password" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} onBlur={() => saveGeminiApiKey(geminiKey)} placeholder="Gemini API key" /><button className="summary-button" onClick={summarizePage} disabled={isSummarizing}>{isSummarizing ? 'Summarizing…' : 'Summarize page'}</button>{summaryError && <p className="inline-error" role="alert">{summaryError}</p>}{summary && <div className="summary-output">{summary}</div>}</div>
+          </section>
         )}
       </main>
+      <footer className="air-footer"><span><Undo2 size={13} />Stop anytime with the button above</span><span>v1.0</span></footer>
     </div>
   );
+}
+
+function StatusDot({ active, label, muted = false }: { active: boolean; label: string; muted?: boolean }) {
+  return <div className={`status-item ${muted ? 'muted' : ''}`}><span className={`status-dot ${active ? 'active' : ''}`} />{label}</div>;
+}
+
+function SettingRow({ label, value, children }: { label: string; value?: string; children: React.ReactNode }) {
+  return <div className="setting-row"><div><strong>{label}</strong>{value && <small>{value}</small>}</div><div className="setting-control">{children}</div></div>;
 }

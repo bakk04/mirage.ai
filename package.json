@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.1.1",
-    "@tensorflow/tfjs": "^4.22.0",
     "framer-motion": "^14.3.0",
     "lucide-react": "^1.58.0",
     "react": "^19.2.8",

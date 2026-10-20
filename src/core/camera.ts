@@ -109,6 +109,13 @@ export async function initializeCamera(config: CameraConfig = {}): Promise<HTMLV
   }
 
   return new Promise<HTMLVideoElement>((resolve, reject) => {
+    const cleanupAfterFailure = (error: unknown): void => {
+      stream.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+      video.remove();
+      reject(error);
+    };
+
     const handleLoadedData = async () => {
       video.removeEventListener('loadeddata', handleLoadedData);
       video.removeEventListener('error', handleError);
@@ -116,14 +123,14 @@ export async function initializeCamera(config: CameraConfig = {}): Promise<HTMLV
         await video.play();
         resolve(video);
       } catch (playError) {
-        reject(new CameraAccessError('Failed to start webcam video playback.', playError));
+        cleanupAfterFailure(new CameraAccessError('Failed to start webcam video playback.', playError));
       }
     };
 
     const handleError = (e: Event) => {
       video.removeEventListener('loadeddata', handleLoadedData);
       video.removeEventListener('error', handleError);
-      reject(new CameraAccessError('Error encountered on HTMLVideoElement stream decoding.', e));
+      cleanupAfterFailure(new CameraAccessError('Error encountered on HTMLVideoElement stream decoding.', e));
     };
 
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -131,7 +138,7 @@ export async function initializeCamera(config: CameraConfig = {}): Promise<HTMLV
         .play()
         .then(() => resolve(video))
         .catch((err) => {
-          reject(new CameraAccessError('Failed to start webcam video playback.', err));
+          cleanupAfterFailure(new CameraAccessError('Failed to start webcam video playback.', err));
         });
     } else {
       video.addEventListener('loadeddata', handleLoadedData);
