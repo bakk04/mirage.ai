@@ -133,7 +133,28 @@ export class ToolbarUI {
       }
       return;
     }
-    if (document.getElementById('airbrowse-toolbar-host')) return;
+    const existingHost = document.getElementById('airbrowse-toolbar-host');
+    if (existingHost) {
+      const existingShadow = existingHost.shadowRoot;
+      const existingContainer = existingShadow?.querySelector('.toolbar-container');
+      if (existingShadow && existingContainer) {
+        this.host = existingHost;
+        this.shadow = existingShadow;
+        this.containerEl = existingContainer as HTMLElement;
+        this.buttonElements.clear();
+        this.progressCircles.clear();
+        for (const cfg of BUTTON_CONFIGS) {
+          const button = existingShadow.querySelector(
+            `.toolbar-btn[data-action="${cfg.id}"]`
+          ) as HTMLElement | null;
+          const circle = button?.querySelector('.dwell-ring-circle') as SVGCircleElement | null;
+          if (button) this.buttonElements.set(cfg.id, button);
+          if (circle) this.progressCircles.set(cfg.id, circle);
+        }
+        return;
+      }
+      existingHost.remove();
+    }
 
     const host = document.createElement('div');
     host.id = 'airbrowse-toolbar-host';
@@ -429,7 +450,7 @@ export class ToolbarUI {
 
   /** Shows the controls only while gesture control is actively running. */
   public setVisible(visible: boolean): void {
-    if (!this.host) return;
+    if (!this.host?.style) return;
     this.host.style.visibility = visible ? 'visible' : 'hidden';
     this.host.style.opacity = visible ? '1' : '0';
     if (!visible) this.clearHover();

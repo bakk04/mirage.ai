@@ -38,7 +38,26 @@ export const CONFIG_STORAGE_KEY = 'airbrowse_config';
 
 export const MESSAGE_TYPES = {
   CONFIG_UPDATED: 'AIRBROWSE_CONFIG_UPDATED',
+  GET_RUNTIME_STATUS: 'AIRBROWSE_GET_RUNTIME_STATUS',
 } as const;
+
+export interface RuntimeStatus {
+  running: boolean;
+  camera: string;
+  mediapipe: string;
+  hands: number;
+  landmarks: string;
+  gesture: string;
+  confidence: number;
+  stabilityFrames: number;
+  lastCommand: string;
+  commandResult: string;
+  inferenceMs: number | null;
+  fsmMs: number | null;
+  commandDispatchMs: number | null;
+  processingFps: number | null;
+  error: string;
+}
 
 export interface ConfigUpdatedMessage {
   type: typeof MESSAGE_TYPES.CONFIG_UPDATED;

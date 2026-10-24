@@ -98,11 +98,10 @@ export class GestureRecognizer {
   private neutralY = 0.5;
 
   // Tracking signal quality
-  private lastValidTimestamp = 0;
+  private lastValidTimestamp: number | null = null;
   private mirrorX = true;
   private enableRefreshGesture = true;
   private enableDangerousGestures = false;
-  private lastCommandTimestamp = -Infinity;
   private commandPose: 'OPEN' | 'THREE' | null = null;
   private commandStableFrames = 0;
   private commandTriggeredPose: 'OPEN' | 'THREE' | null = null;
@@ -142,7 +141,7 @@ export class GestureRecognizer {
     this.lastScrollTimestamp = 0;
     this.lastCommandMotion = 0;
     this.neutralY = 0.5;
-    this.lastValidTimestamp = 0;
+    this.lastValidTimestamp = null;
     this.commandPose = null;
     this.commandStableFrames = 0;
     this.commandTriggeredPose = null;
@@ -219,7 +218,7 @@ export class GestureRecognizer {
           : confidence < GESTURE_CONFIG.minConfidence
             ? `Ignored: confidence ${confidence.toFixed(2)} below ${GESTURE_CONFIG.minConfidence.toFixed(2)}`
             : 'Ignored: invalid or degenerate landmarks';
-      if (this.lastValidTimestamp === 0) {
+      if (this.lastValidTimestamp === null) {
         this.state = RecognizerState.IDLE;
         return events;
       }
@@ -304,13 +303,11 @@ export class GestureRecognizer {
       commandPose !== null &&
       commandPose === this.commandPose &&
       this.commandStableFrames >= GESTURE_CONFIG.scrollStableFrames &&
-      this.commandTriggeredPose !== commandPose &&
-      timestamp - this.lastCommandTimestamp >= GESTURE_CONFIG.actionCooldownMs
+      this.commandTriggeredPose !== commandPose
     ) {
       // A deliberate horizontal movement turns an open hand into the keyboard
       // compound gesture instead of allowing the dangerous close action.
       if (commandPose === 'OPEN' && Math.abs(motion.dx) >= 0.12) {
-        this.lastCommandTimestamp = timestamp;
         this.commandTriggeredPose = commandPose;
         events.push({ type: 'COMMAND', command: 'TOGGLE_KEYBOARD' });
         this.lastDecisionReason = 'Keyboard toggle: stable open hand with horizontal motion';
@@ -322,7 +319,6 @@ export class GestureRecognizer {
           this.enableDangerousGestures &&
           Math.abs(motion.dx) < 0.12)
       ) {
-        this.lastCommandTimestamp = timestamp;
         this.commandTriggeredPose = commandPose;
         events.push({
           type: 'COMMAND',
@@ -341,10 +337,8 @@ export class GestureRecognizer {
     if (
       isFourFinger &&
       Math.abs(motion.dy) >= ZOOM_MOTION_THRESHOLD &&
-      !this.zoomTriggered &&
-      timestamp - this.lastCommandTimestamp >= GESTURE_CONFIG.actionCooldownMs
+      !this.zoomTriggered
     ) {
-      this.lastCommandTimestamp = timestamp;
       this.zoomTriggered = true;
       events.push({ type: 'COMMAND', command: motion.dy < 0 ? 'ZOOM_IN' : 'ZOOM_OUT' });
       this.lastDecisionReason = motion.dy < 0
@@ -353,9 +347,9 @@ export class GestureRecognizer {
       return events;
     }
 
-    // Command poses are exclusive. Even when a command is disabled, cooling
-    // down, or waiting for enough movement, do not let the same landmarks
-    // fall through to pinch, pointer, or scroll recognition.
+    // Command poses are exclusive. Even when a command is disabled or
+    // waiting for enough movement, do not let the same landmarks fall
+    // through to pinch, pointer, or scroll recognition.
     if (
       this.state !== RecognizerState.PINCH_PENDING &&
       (isFiveFinger || isFourFinger || isThreeFinger)
@@ -598,10 +592,10 @@ export class GestureRecognizer {
     wrist: Point2D | Point3D
   ): boolean {
     return (
-      isFingerExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist) &&
-      isFingerExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist) &&
-      isFingerExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist) &&
-      isFingerExtended(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist)
+      this.isExtended(landmarks[LANDMARK_INDEX.INDEX_TIP], landmarks[LANDMARK_INDEX.INDEX_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.MIDDLE_TIP], landmarks[LANDMARK_INDEX.MIDDLE_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.RING_TIP], landmarks[LANDMARK_INDEX.RING_PIP], wrist, 1.12) &&
+      this.isExtended(landmarks[LANDMARK_INDEX.PINKY_TIP], landmarks[LANDMARK_INDEX.PINKY_PIP], wrist, 1.12)
     );
   }
 
@@ -629,9 +623,11 @@ export class GestureRecognizer {
     landmarks: Array<Point2D | Point3D>,
     wrist: Point2D | Point3D
   ): boolean {
+    const thumbTip = landmarks[LANDMARK_INDEX.THUMB_TIP];
+    const thumbIp = landmarks[LANDMARK_INDEX.THUMB_IP];
     return (
-      dist(landmarks[LANDMARK_INDEX.THUMB_TIP], wrist) >
-      dist(landmarks[LANDMARK_INDEX.THUMB_IP], wrist) * 1.1
+      dist(thumbTip, wrist) > dist(thumbIp, wrist) * 1.03 &&
+      dist(thumbTip, thumbIp) > handScale(landmarks) * 0.18
     );
   }
 

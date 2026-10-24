@@ -206,6 +206,7 @@ export class KeyboardUI {
     this.isOpen = true;
     this.host.style.opacity = '1';
     this.host.style.transform = 'translateX(-50%) translateY(0)';
+    this.host.style.pointerEvents = 'auto';
   }
 
   public close(): void {
@@ -213,6 +214,7 @@ export class KeyboardUI {
     this.isOpen = false;
     this.host.style.opacity = '0';
     this.host.style.transform = 'translateX(-50%) translateY(120%)';
+    this.host.style.pointerEvents = 'none';
     this.clearHover();
   }
 
@@ -493,6 +495,9 @@ export class KeyboardUI {
     key.dataset.action = action;
     key.dataset.val = value;
     key.textContent = displayLabel;
+    key.addEventListener('click', () => {
+      this.executeKey(key.dataset.action, key.dataset.val);
+    });
 
     // Progress bar for dwell feedback
     const progressBar = document.createElement('div');

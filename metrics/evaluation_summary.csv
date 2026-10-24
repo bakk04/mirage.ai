@@ -1,0 +1,16 @@
+metric,value
+Evaluated Samples,480
+Correct Predictions,447
+Incorrect Predictions,33
+Overall Accuracy,93.12%
+Macro Precision,94.82%
+Macro Recall,93.12%
+Macro F1-Score,93.58%
+Weighted Precision,94.82%
+Weighted Recall,93.12%
+Weighted F1-Score,93.58%
+Unknown Rejection Rate (Specificity),100.00%
+Mean FSM Inference Time,0.008 ms
+Median FSM Inference Time,0.005 ms
+P95 FSM Inference Time,0.017 ms
+Min / Max FSM Inference Time,0.000 ms / 0.679 ms

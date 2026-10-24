@@ -24,6 +24,7 @@ import {
   loadGeminiApiKey,
   saveConfig,
   saveGeminiApiKey,
+  RuntimeStatus,
 } from '../core/config';
 
 type View = 'control' | 'guide' | 'settings';
@@ -75,17 +76,43 @@ export default function App() {
   const [summary, setSummary] = useState('');
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
 
   useEffect(() => {
-    Promise.all([loadConfig(), loadGeminiApiKey()]).then(([loaded, key]) => {
-      setConfig(loaded);
-      setGeminiKey(key);
-    });
+    let statusPort: chrome.runtime.Port | null = null;
+    Promise.all([loadConfig(), loadGeminiApiKey()])
+      .then(([loaded, key]) => {
+        setConfig(loaded);
+        setGeminiKey(key);
+      })
+      .catch(() => {
+        setRuntimeError('Unable to load AirBrowse settings. Default settings are active.');
+      });
     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-      setCompatibility(getCompatibility(tab?.url));
+      const activeCompatibility = getCompatibility(tab?.url);
+      setCompatibility(activeCompatibility);
+      if (tab?.id !== undefined && activeCompatibility.kind === 'ordinary') {
+        chrome.tabs.sendMessage(tab.id, { type: MESSAGE_TYPES.GET_RUNTIME_STATUS })
+          .then((status) => setRuntimeStatus(status as RuntimeStatus))
+          .catch(() => setRuntimeStatus(null));
+        try {
+          statusPort = chrome.tabs.connect(tab.id, { name: 'airbrowse-runtime-status' });
+          statusPort.onMessage.addListener((status: RuntimeStatus) => setRuntimeStatus(status));
+          statusPort.onDisconnect.addListener(() => {
+            statusPort = null;
+          });
+        } catch {
+          statusPort = null;
+        }
+      }
     }).catch(() => {
       setCompatibility({ kind: 'unknown', message: 'The active tab cannot be identified.' });
     });
+    return () => {
+      statusPort?.disconnect();
+      statusPort = null;
+    };
   }, []);
 
   const sendConfig = async (nextConfig: AirBrowseConfig): Promise<RuntimeResponse> => {
@@ -113,35 +140,43 @@ export default function App() {
   const toggleControl = async () => {
     setIsStarting(true);
     setRuntimeError(null);
-    const nextConfig = { ...config, isEnabled: !config.isEnabled };
-    await saveConfig({ isEnabled: nextConfig.isEnabled });
-    const response = await sendConfig(nextConfig);
-    if (!response.success && nextConfig.isEnabled) {
-      setRuntimeError(response.error ?? 'Unable to start camera control.');
-      setConfig({ ...nextConfig, isEnabled: false });
-      await saveConfig({ isEnabled: false });
-    } else {
-      setConfig(nextConfig);
+    try {
+      const nextConfig = { ...config, isEnabled: !config.isEnabled };
+      await saveConfig({ isEnabled: nextConfig.isEnabled });
+      const response = await sendConfig(nextConfig);
+      if (!response.success && nextConfig.isEnabled) {
+        setRuntimeError(response.error ?? 'Unable to start camera control.');
+        setConfig({ ...nextConfig, isEnabled: false });
+        await saveConfig({ isEnabled: false });
+      } else {
+        setConfig(nextConfig);
+      }
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : 'Unable to update Air Control.');
     }
     setIsStarting(false);
   };
 
   const updateSetting = async (updates: Partial<AirBrowseConfig>) => {
-    const nextConfig = await saveConfig(updates);
-    setConfig(nextConfig);
-    if (nextConfig.isEnabled) {
-      const response = await sendConfig(nextConfig);
-      if (!response.success) setRuntimeError(response.error ?? 'Unable to update control settings.');
+    try {
+      const nextConfig = await saveConfig(updates);
+      setConfig(nextConfig);
+      if (nextConfig.isEnabled) {
+        const response = await sendConfig(nextConfig);
+        if (!response.success) setRuntimeError(response.error ?? 'Unable to update control settings.');
+      }
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : 'Unable to update control settings.');
     }
   };
 
   const toggleKeyboard = async () => {
-    const tabId = (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
-    if (tabId === undefined) {
-      setRuntimeError('No active tab is available.');
-      return;
-    }
     try {
+      const tabId = (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+      if (tabId === undefined) {
+        setRuntimeError('No active tab is available.');
+        return;
+      }
       await chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_KEYBOARD' });
     } catch {
       setRuntimeError('Start Air Control before opening the keyboard.');
@@ -206,11 +241,42 @@ export default function App() {
             </section>
 
             <section className="status-row" aria-live="polite">
-              <StatusDot active={config.isEnabled} label={config.isEnabled ? 'Camera and MediaPipe active' : 'Camera off'} />
+              <StatusDot active={runtimeStatus?.running ?? config.isEnabled} label={runtimeStatus?.running ? 'Camera and MediaPipe active' : 'Camera off'} />
               <StatusDot active={compatibility.kind === 'ordinary'} label={compatibility.message} muted={compatibility.kind !== 'ordinary'} />
             </section>
 
             {runtimeError && <div className="error-banner" role="alert"><X size={15} />{runtimeError}</div>}
+
+            <section className="intelligence-panel" aria-label="Live Intelligence">
+              <div className="intelligence-heading">
+                <div>
+                  <p className="eyebrow">LIVE INTELLIGENCE</p>
+                  <h2>{runtimeStatus?.gesture ?? 'IDLE'}</h2>
+                </div>
+                <div className={`telemetry-badge ${runtimeStatus?.running ? 'is-live' : ''}`}>
+                  <span />{runtimeStatus?.running ? 'LIVE' : 'OFF'}
+                </div>
+              </div>
+              <div className="telemetry-grid">
+                <Metric label="Hands" value={runtimeStatus ? String(runtimeStatus.hands) : '—'} />
+                <Metric label="Inference" value={runtimeStatus?.inferenceMs != null ? `${runtimeStatus.inferenceMs.toFixed(1)} ms` : '—'} />
+                <Metric label="Processing" value={runtimeStatus?.processingFps != null ? `${runtimeStatus.processingFps.toFixed(0)} fps` : '—'} />
+                <Metric label="Landmarks" value={runtimeStatus?.landmarks ?? '—'} />
+              </div>
+              <div className="intelligence-footer">
+                <span>{runtimeStatus?.lastCommand && runtimeStatus.lastCommand !== 'none' ? `${runtimeStatus.lastCommand} · ${runtimeStatus.commandResult}` : 'No command executed'}</span>
+                <button className="diagnostics-toggle" onClick={() => setShowDiagnostics((value) => !value)} aria-expanded={showDiagnostics}>
+                  {showDiagnostics ? 'Hide details' : 'Details'}
+                </button>
+              </div>
+              {showDiagnostics && <div className="diagnostics-detail">
+                <span>Model: MediaPipe Hand Landmarker 1.1.1</span>
+                <span>Classifier: MIRAGE custom FSM</span>
+                <span>Confidence: {runtimeStatus ? runtimeStatus.confidence.toFixed(2) : '—'} · Stability: {runtimeStatus?.stabilityFrames ?? '—'}</span>
+                <span>FSM: {runtimeStatus?.fsmMs != null ? `${runtimeStatus.fsmMs.toFixed(3)} ms` : '—'} · Dispatch: {runtimeStatus?.commandDispatchMs != null ? `${runtimeStatus.commandDispatchMs.toFixed(1)} ms` : '—'}</span>
+                {runtimeStatus?.error && <span className="inline-error">{runtimeStatus.error}</span>}
+              </div>}
+            </section>
 
             <div className="quick-actions">
               <button onClick={toggleKeyboard} disabled={!config.isEnabled}><Keyboard size={18} /><span>Open keyboard<small>Point and pinch to type</small></span><ChevronRight size={15} /></button>
@@ -255,4 +321,8 @@ function StatusDot({ active, label, muted = false }: { active: boolean; label: s
 
 function SettingRow({ label, value, children }: { label: string; value?: string; children: React.ReactNode }) {
   return <div className="setting-row"><div><strong>{label}</strong>{value && <small>{value}</small>}</div><div className="setting-control">{children}</div></div>;
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
 }

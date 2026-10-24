@@ -83,6 +83,8 @@ export class InteractionEngine {
   // Scroll state
   private pendingScrollPx = 0;
   private scrollRafId: number | null = null;
+  private scrollVelocity = 0;
+  private lastScrollFrameTime: number | null = null;
   private activeScrollTarget: Element | Window | null = typeof window !== 'undefined' ? window : null;
 
   constructor(config: InteractionEngineConfig = {}) {
@@ -95,17 +97,30 @@ export class InteractionEngine {
    * Negative speed = page moves up (scroll up).
    * Accumulates sub-pixel remainders so fractional speeds are never dropped.
    */
-  public scrollByJoystick(speed: number, cursorX?: number, cursorY?: number): void {
+  public scrollByJoystick(
+    speed: number,
+    cursorX?: number,
+    cursorY?: number,
+    sourceFrameMs?: number
+  ): void {
     if (!Number.isFinite(speed) || Math.abs(speed) < 0.001) return;
     if (typeof window === 'undefined') return;
-
-    this.pendingScrollPx += speed;
 
     if (cursorX !== undefined && cursorY !== undefined) {
       const el = getDeepElementFromPoint(cursorX, cursorY);
       this.activeScrollTarget = getScrollableAncestor(el);
     }
 
+    if (sourceFrameMs !== undefined && sourceFrameMs > 0) {
+      this.scrollVelocity = speed / (sourceFrameMs / 1000);
+      if (this.scrollRafId === null) {
+        this.lastScrollFrameTime = null;
+        this.scrollRafId = requestAnimationFrame(this.flushSmoothScroll);
+      }
+      return;
+    }
+
+    this.pendingScrollPx += speed;
     if (this.scrollRafId === null) {
       this.scrollRafId = requestAnimationFrame(() => {
         const total = this.pendingScrollPx;
@@ -131,6 +146,8 @@ export class InteractionEngine {
    */
   public stopScrolling(): void {
     this.pendingScrollPx = 0;
+    this.scrollVelocity = 0;
+    this.lastScrollFrameTime = null;
     if (this.scrollRafId !== null) {
       if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
         window.cancelAnimationFrame(this.scrollRafId);
@@ -140,6 +157,36 @@ export class InteractionEngine {
       this.scrollRafId = null;
     }
   }
+
+  private readonly flushSmoothScroll = (timestamp: number): void => {
+    if (this.scrollVelocity === 0 || typeof window === 'undefined') {
+      this.scrollRafId = null;
+      this.lastScrollFrameTime = null;
+      return;
+    }
+
+    const previous = this.lastScrollFrameTime ?? timestamp;
+    const elapsedMs = Math.min(Math.max(timestamp - previous, 1), 50);
+    this.lastScrollFrameTime = timestamp;
+    const pixels = this.scrollVelocity * (elapsedMs / 1000);
+    const intScroll = Math.trunc(pixels + (pixels >= 0 ? 1e-9 : -1e-9));
+    this.pendingScrollPx += pixels - intScroll;
+    const remainderScroll = Math.trunc(
+      this.pendingScrollPx + (this.pendingScrollPx >= 0 ? 1e-9 : -1e-9)
+    );
+    this.pendingScrollPx -= remainderScroll;
+
+    if (intScroll + remainderScroll !== 0) {
+      const total = intScroll + remainderScroll;
+      const target = this.activeScrollTarget ?? window;
+      if (target === window) {
+        window.scrollBy({ top: total, behavior: 'auto' });
+      } else if ('scrollBy' in target) {
+        target.scrollBy({ top: total, behavior: 'auto' });
+      }
+    }
+    this.scrollRafId = requestAnimationFrame(this.flushSmoothScroll);
+  };
 
   /**
    * Synthetic click sequence: pointerdown -> mousedown -> focus -> pointerup -> mouseup -> click.

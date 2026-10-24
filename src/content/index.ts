@@ -15,12 +15,14 @@ import {
   AirBrowseConfig,
   DEFAULT_CONFIG,
   MESSAGE_TYPES,
+  RuntimeStatus,
 } from '../core/config';
 import { SpatialOverlay } from './overlay';
 import { ToolbarUI, ToolbarAction } from '../ui/Toolbar';
 import { KeyboardUI } from '../ui/Keyboard';
 import { extractMainText } from './extractor';
 import type { HandLandmarker, NormalizedLandmark } from '@mediapipe/tasks-vision';
+import { GESTURE_CONFIG } from '../core/math';
 
 const AIRBROWSE_BUILD_ID = 'gesture-controls-2026-10-20';
 
@@ -30,7 +32,14 @@ class AirBrowseContentPipeline {
   private animationFrameId: number | null = null;
   private lastVideoTime = -1;
   private lastInferenceTimestamp = -Infinity;
+  private startupRetryTimer: number | null = null;
   private consecutiveInferenceErrors = 0;
+  private latestInferenceMs: number | null = null;
+  private latestFsmMs: number | null = null;
+  private latestCommandDispatchMs: number | null = null;
+  private inferenceFrameTimes: number[] = [];
+  private readonly statusPorts = new Set<chrome.runtime.Port>();
+  private lastStatusBroadcast = 0;
   private isRunning = false;
 
   // Configuration
@@ -65,6 +74,7 @@ class AirBrowseContentPipeline {
     if (typeof document !== 'undefined') {
       document.documentElement.dataset.airbrowseBuild = AIRBROWSE_BUILD_ID;
     }
+
     this.gestureRecognizer = new GestureRecognizer();
     this.interactionEngine = new InteractionEngine();
     this.overlay = new SpatialOverlay();
@@ -95,13 +105,13 @@ class AirBrowseContentPipeline {
         return;
       }
 
-      await this.resume();
-
       window.addEventListener('beforeunload', () => this.teardown(), { once: true });
       window.addEventListener('pagehide', () => this.teardown(), { once: true });
+      await this.resume();
     } catch (error) {
       console.error('[AirBrowse] Startup error:', error);
       this.pause();
+      this.scheduleStartupRetry();
     }
   }
 
@@ -136,11 +146,27 @@ class AirBrowseContentPipeline {
       this.diagnostic.mediapipe = this.landmarker ? 'READY' : 'ERROR';
       console.error('[AirBrowse] Failed to resume pipeline:', error);
       this.pause();
+      this.scheduleStartupRetry();
     }
+  }
+
+  private scheduleStartupRetry(): void {
+    if (this.startupRetryTimer !== null || !this.config.isEnabled || typeof window === 'undefined') {
+      return;
+    }
+    this.startupRetryTimer = window.setTimeout(() => {
+      this.startupRetryTimer = null;
+      void this.resume();
+    }, 1000);
   }
 
   public pause(): void {
     this.isRunning = false;
+
+    if (this.startupRetryTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(this.startupRetryTimer);
+      this.startupRetryTimer = null;
+    }
 
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
@@ -160,6 +186,11 @@ class AirBrowseContentPipeline {
     this.lastVideoTime = -1;
     this.lastInferenceTimestamp = -Infinity;
     this.consecutiveInferenceErrors = 0;
+    this.lastTrackedPalm = null;
+    this.latestInferenceMs = null;
+    this.latestFsmMs = null;
+    this.latestCommandDispatchMs = null;
+    this.inferenceFrameTimes = [];
 
     this.gestureRecognizer.reset();
     this.interactionEngine.stopScrolling();
@@ -192,6 +223,13 @@ class AirBrowseContentPipeline {
   private attachMessageListener(): void {
     if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage) return;
 
+    chrome.runtime.onConnect?.addListener((port) => {
+      if (port.name !== 'airbrowse-runtime-status') return;
+      this.statusPorts.add(port);
+      port.onDisconnect.addListener(() => this.statusPorts.delete(port));
+      port.postMessage(this.getRuntimeStatus());
+    });
+
     chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
       if (typeof message === 'object' && message !== null) {
         const msg = message as { type?: string; payload?: AirBrowseConfig };
@@ -204,6 +242,11 @@ class AirBrowseContentPipeline {
               sendResponse({ success: false, error: message, active: this.isRunning });
             });
           return true;
+        }
+
+        if (msg.type === MESSAGE_TYPES.GET_RUNTIME_STATUS) {
+          sendResponse(this.getRuntimeStatus());
+          return false;
         }
 
         if (msg.type === 'EXTRACT_TEXT') {
@@ -314,6 +357,45 @@ class AirBrowseContentPipeline {
     }
   }
 
+  private getRuntimeStatus(): RuntimeStatus {
+    const samples = this.inferenceFrameTimes;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const processingFps =
+      samples.length >= 2 && last > first ? ((samples.length - 1) * 1000) / (last - first) : null;
+    return {
+      running: this.isRunning,
+      camera: this.diagnostic.camera,
+      mediapipe: this.diagnostic.mediapipe,
+      hands: this.diagnostic.hands,
+      landmarks: this.diagnostic.landmarks,
+      gesture: this.diagnostic.gesture,
+      confidence: this.diagnostic.confidence,
+      stabilityFrames: this.diagnostic.stabilityFrames,
+      lastCommand: this.diagnostic.lastCommand,
+      commandResult: this.diagnostic.commandResult,
+      inferenceMs: this.latestInferenceMs,
+      fsmMs: this.latestFsmMs,
+      commandDispatchMs: this.latestCommandDispatchMs,
+      processingFps,
+      error: this.diagnostic.error,
+    };
+  }
+
+  private broadcastRuntimeStatus(): void {
+    const now = performance.now();
+    if (now - this.lastStatusBroadcast < 250 || this.statusPorts.size === 0) return;
+    this.lastStatusBroadcast = now;
+    const status = this.getRuntimeStatus();
+    for (const port of this.statusPorts) {
+      try {
+        port.postMessage(status);
+      } catch {
+        this.statusPorts.delete(port);
+      }
+    }
+  }
+
   private loop(timestamp: number): void {
     if (!this.isRunning || !this.video || !this.landmarker) {
       return;
@@ -340,6 +422,9 @@ class AirBrowseContentPipeline {
         const tStart = performance.now();
         const results = this.landmarker.detectForVideo(this.video, timestamp);
         const latencyMs = performance.now() - tStart;
+        this.latestInferenceMs = latencyMs;
+        this.inferenceFrameTimes.push(timestamp);
+        if (this.inferenceFrameTimes.length > 30) this.inferenceFrameTimes.shift();
         if (this.latencySamples.length < 500) {
           this.latencySamples.push(latencyMs);
         }
@@ -394,11 +479,14 @@ class AirBrowseContentPipeline {
         }
 
         // 1. Process frame through finite state machine
+        const fsmStart = performance.now();
         const events: GestureEvent[] = this.gestureRecognizer.update(
           handLandmarks,
           timestamp,
           confidence
         );
+        this.latestFsmMs = performance.now() - fsmStart;
+        this.broadcastRuntimeStatus();
         const gestureDiagnostics = this.gestureRecognizer.getDiagnostics();
         this.diagnostic.confidence = gestureDiagnostics.confidence;
         this.diagnostic.stabilityFrames = gestureDiagnostics.stabilityFrames;
@@ -480,7 +568,8 @@ class AirBrowseContentPipeline {
                 this.interactionEngine.scrollByJoystick(
                   ev.speed * sensitivityScale,
                   screenPxX,
-                  screenPxY
+                  screenPxY,
+                  ev.frameScale * GESTURE_CONFIG.nominalFrameMs
                 );
                 break;
 
@@ -567,10 +656,12 @@ class AirBrowseContentPipeline {
   }
 
   private dispatchCommand(command: 'REFRESH' | 'CLOSE_WINDOW', label: string): void {
+    const dispatchStart = performance.now();
     this.diagnostic.lastCommand = command;
     this.diagnostic.commandResult = 'PENDING';
     chrome.runtime.sendMessage({ type: command }, (response?: { success?: boolean; error?: string }) => {
       if (chrome.runtime.lastError) {
+        this.latestCommandDispatchMs = performance.now() - dispatchStart;
         const message = chrome.runtime.lastError.message ?? 'Runtime message failed';
         this.diagnostic.commandResult = `FAILED: ${message}`;
         this.diagnostic.error = message;
@@ -578,9 +669,11 @@ class AirBrowseContentPipeline {
       }
 
       if (response?.success) {
+        this.latestCommandDispatchMs = performance.now() - dispatchStart;
         this.diagnostic.commandResult = 'SUCCESS';
         this.overlay.showToast(label);
       } else {
+        this.latestCommandDispatchMs = performance.now() - dispatchStart;
         this.diagnostic.commandResult = `FAILED: ${response?.error ?? 'No acknowledgement'}`;
         this.diagnostic.error = response?.error ?? 'No acknowledgement';
       }
@@ -588,19 +681,23 @@ class AirBrowseContentPipeline {
   }
 
   private dispatchZoom(delta: number): void {
+    const dispatchStart = performance.now();
     this.diagnostic.lastCommand = delta > 0 ? 'ZOOM_IN' : 'ZOOM_OUT';
     this.diagnostic.commandResult = 'PENDING';
     chrome.runtime.sendMessage({ type: 'ZOOM', delta }, (response?: { success?: boolean; zoom?: number; error?: string }) => {
       if (chrome.runtime.lastError) {
+        this.latestCommandDispatchMs = performance.now() - dispatchStart;
         const message = chrome.runtime.lastError.message ?? 'Zoom message failed';
         this.diagnostic.commandResult = `FAILED: ${message}`;
         this.diagnostic.error = message;
         return;
       }
       if (response?.success) {
+        this.latestCommandDispatchMs = performance.now() - dispatchStart;
         this.diagnostic.commandResult = 'SUCCESS';
         this.overlay.showToast(`Zoom ${Math.round((response.zoom ?? 1) * 100)}%`);
       } else {
+        this.latestCommandDispatchMs = performance.now() - dispatchStart;
         const message = response?.error ?? 'Zoom was not acknowledged';
         this.diagnostic.commandResult = `FAILED: ${message}`;
         this.diagnostic.error = message;

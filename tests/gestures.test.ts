@@ -404,6 +404,17 @@ describe('3-Gesture System Suite', () => {
     expect(scrollEnds.length).toBe(1);
   });
 
+  it('does not treat a valid frame at timestamp zero as missing tracking history', () => {
+    const peaceHand = createPeaceSignHand(0.50);
+    recognizer.update(peaceHand, 0);
+    recognizer.update(peaceHand, 30);
+    recognizer.update(peaceHand, 60);
+
+    expect(recognizer.getCurrentState()).toBe(RecognizerState.SCROLLING);
+    expect(recognizer.update(null, 70)).toEqual([]);
+    expect(recognizer.getCurrentState()).toBe(RecognizerState.SCROLLING);
+  });
+
   it('dwell on a button = exactly 1 activation', () => {
     const actionSpy = vi.fn();
     const toolbar = new ToolbarUI({ onAction: actionSpy });
